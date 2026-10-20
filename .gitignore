@@ -1,0 +1,8 @@
+.venv/
+.env
+cache/
+data/
+__pycache__/
+*.pyc
+stickers_src/*
+!stickers_src/.gitkeep

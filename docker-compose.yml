@@ -1,0 +1,13 @@
+services:
+  bot:
+    build: .
+    container_name: faceswap-stickerbot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./stickers_src:/app/stickers_src
+      - ./cache:/app/cache
+      - ./data:/app/data
+      - insightface-models:/root/.insightface
+volumes:
+  insightface-models:

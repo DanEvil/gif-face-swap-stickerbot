@@ -272,6 +272,48 @@ def _begin_swap_media(src: str, source_face, workdir: str, idx: int):
     return proc, webm_path
 
 
+def _encode_from_webm(src_webm: str, out_webm: str, crf: int, extra: list[str] = ()):
+    cmd = [
+        _ffmpeg, "-y", "-loglevel", "error", "-i", src_webm,
+        "-vf", "fps=30,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:white",
+        "-c:v", "libvpx-vp9", "-crf", str(crf), "-b:v", "0",
+        "-deadline", "good", "-cpu-used", "4", "-row-mt", "1",
+        "-pix_fmt", "yuva420p", "-loop", "0", "-an",
+        *extra, out_webm,
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+
+
+MAX_WEBM_BYTES = 250 * 1024  # лимит Telegram для видео-стикера 256 КБ, с запасом
+
+
+def _finalize_webm(proc, webm_path: str) -> str:
+    rc = proc.wait()
+    if rc != 0:
+        err = (proc.stderr.read() or b"").decode("utf-8", "ignore")[-400:]
+        raise RuntimeError(f"ffmpeg завершился с кодом {rc}: {err}")
+    proc.stderr.close()
+    if os.path.getsize(webm_path) <= MAX_WEBM_BYTES:
+        return webm_path
+    tmp = webm_path + ".tmp.webm"
+    try:
+        for crf in (34, 38, 42):
+            _encode_from_webm(webm_path, tmp, crf)
+            if os.path.getsize(tmp) <= MAX_WEBM_BYTES:
+                os.replace(tmp, webm_path)
+                return webm_path
+        _encode_from_webm(webm_path, tmp, 42, extra=["-t", "2.0"])
+        if os.path.getsize(tmp) > MAX_WEBM_BYTES:
+            raise RuntimeError(
+                f"Стикер не влезает в лимит Telegram 256 КБ ({os.path.getsize(tmp) // 1024} КБ)"
+            )
+        os.replace(tmp, webm_path)
+        return webm_path
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 async def generate_stickers(source_face, srcs: list[str], progress_cb=None) -> list[str]:
     if not srcs:
         raise RuntimeError(f"Не выбраны исходные стикеры")
@@ -286,9 +328,5 @@ async def generate_stickers(source_face, srcs: list[str], progress_cb=None) -> l
         if progress_cb:
             await progress_cb(i + 1, len(srcs))
     for proc, webm in jobs:
-        rc = await loop.run_in_executor(None, proc.wait)
-        if rc != 0:
-            err = (proc.stderr.read() or b"").decode("utf-8", "ignore")[-400:]
-            raise RuntimeError(f"ffmpeg завершился с кодом {rc}: {err}")
-        results.append(webm)
+        results.append(await loop.run_in_executor(None, _finalize_webm, proc, webm))
     return results

@@ -4,6 +4,7 @@ services:
     container_name: faceswap-stickerbot
     restart: unless-stopped
     env_file: .env
+    gpus: all
     volumes:
       - ./stickers_src:/app/stickers_src
       - ./cache:/app/cache

@@ -32,6 +32,11 @@ Copy-Item .env.example .env   # заполнить BOT_TOKEN от @BotFather
 ffmpeg 9 ставится через `winget install Gyan.FFmpeg`; если пути нет — укажите `FFMPEG_PATH`.
 `inswapper_128.onnx` (~554 МБ, некоммерческая лицензия) скачается сам в `~/.insightface` при первом запуске.
 
+Ускорение: если установлен `onnxruntime-gpu` (пакет требует свой CUDA/cuDNN), InsightFace
+автоматически уйдёт на GPU 4060 Ti и свап ускорится в разы. В Docker-образе (CUDA-база)
+GPU-сборка ставится автоматически + `gpus: all` в compose (нужны NVIDIA‑драйверы на хосте
+и GPU-поддержка WSL2 в Docker Desktop).
+
 ## Запуск
 ```powershell
 .venv\Scripts\python bot.py

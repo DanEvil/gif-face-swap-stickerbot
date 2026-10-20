@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 import os
 import random
 import shutil
@@ -76,7 +78,17 @@ def _init_models():
         from insightface.app import FaceAnalysis
         from insightface.model_zoo.model_zoo import get_model
 
-        _app = FaceAnalysis(providers=["CPUExecutionProvider"])
+        try:
+            import onnxruntime as _ort
+            avail = _ort.get_available_providers()
+        except Exception:
+            avail = []
+        provs = (
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if "CUDAExecutionProvider" in avail
+            else ["CPUExecutionProvider"]
+        )
+        _app = FaceAnalysis(providers=provs)
         _app.prepare(ctx_id=0, det_size=(640, 640))
         _swapper = get_model(_ensure_inswapper_file())
     return _app
@@ -166,41 +178,98 @@ def _read_media(path: str):
     return _read_gif_frames(path)
 
 
-def _swap_frames(frames, source_face):
+_SRC_FACES_DIR = os.path.join(CACHE_DIR, "src_faces")
+
+
+def _src_faces_file(path: str) -> str:
+    st = os.stat(path)
+    h = hashlib.sha1()
+    h.update(os.path.abspath(path).encode("utf-8", "ignore"))
+    h.update(str(int(st.st_mtime)).encode())
+    h.update(str(st.st_size).encode())
+    return os.path.join(_SRC_FACES_DIR, h.hexdigest() + ".json")
+
+
+def _faces_for_frames(path: str, frames):
     app = _init_models()
+    cache = _src_faces_file(path)
+    data = None
+    if os.path.isfile(cache):
+        try:
+            with open(cache, encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, list) and len(loaded) == len(frames):
+                data = loaded
+        except Exception:
+            data = None
+    if data is None:
+        data = []
+        for frame in frames:
+            faces = app.get(frame)
+            if faces:
+                f = max(faces, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))
+                data.append([f.bbox.tolist(), f.kps.tolist(), float(f.det_score)])
+            else:
+                data.append(None)
+        os.makedirs(_SRC_FACES_DIR, exist_ok=True)
+        tmp = cache + ".part"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, cache)
     out = []
-    for frame in frames:
-        faces = app.get(frame)
-        if not faces:
+    for entry in data:
+        if entry is None:
+            out.append(None)
+            continue
+        from insightface.app.common import Face
+
+        out.append(
+            Face(
+                bbox=np.array(entry[0], dtype="float32"),
+                kps=np.array(entry[1], dtype="float32"),
+                det_score=entry[2],
+            )
+        )
+    return out
+
+
+def _swap_frames(frames, faces, source_face):
+    out = []
+    for frame, target in zip(frames, faces):
+        if target is None:
             out.append(frame)
             continue
-        target = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
         out.append(_swapper.get(frame, target, source_face))
     return out
 
 
-def _frames_to_gif(frames, fps, out_path: str):
-    imgs = [Image.fromarray(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)) for f in frames]
-    imgs[0].save(out_path, save_all=True, append_images=imgs[1:], duration=int(1000 / fps), loop=0)
-
-
-def _swap_media(src: str, source_face, workdir: str, idx: int) -> str:
+def _begin_swap_media(src: str, source_face, workdir: str, idx: int):
     frames, fps = _read_media(src)
-    swapped = _swap_frames(frames, source_face)
-    gif_path = os.path.join(workdir, f"swap_{idx}.gif")
-    _frames_to_gif(swapped, fps, gif_path)
+    faces = _faces_for_frames(src, frames)
+    h, w = frames[0].shape[:2]
     webm_path = os.path.join(workdir, f"sticker_{idx}.webm")
     if not _ffmpeg:
         raise RuntimeError("ffmpeg не найден в PATH")
     cmd = [
-        _ffmpeg, "-y", "-loglevel", "error", "-i", gif_path,
-        "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0", "-pix_fmt", "yuva420p",
+        _ffmpeg, "-y", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}",
+        "-r", f"{fps:.4f}", "-i", "-",
         "-vf", "fps=30,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:white",
-        "-loop", "0", "-an", webm_path,
+        "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0",
+        "-deadline", "good", "-cpu-used", "4", "-row-mt", "1",
+        "-pix_fmt", "yuva420p", "-loop", "0", "-an", webm_path,
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
-    os.remove(gif_path)
-    return webm_path
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+    )
+    try:
+        for frame in _swap_frames(frames, faces, source_face):
+            proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+        proc.stdin.close()
+    except Exception:
+        proc.kill()
+        raise
+    return proc, webm_path
 
 
 async def generate_stickers(source_face, srcs: list[str], progress_cb=None) -> list[str]:
@@ -210,9 +279,16 @@ async def generate_stickers(source_face, srcs: list[str], progress_cb=None) -> l
     os.makedirs(out_dir, exist_ok=True)
     loop = asyncio.get_running_loop()
     results = []
+    jobs = []
     for i, src in enumerate(srcs):
-        webm = await loop.run_in_executor(None, _swap_media, src, source_face, out_dir, i)
-        results.append(webm)
+        proc, webm = await loop.run_in_executor(None, _begin_swap_media, src, source_face, out_dir, i)
+        jobs.append((proc, webm))
         if progress_cb:
             await progress_cb(i + 1, len(srcs))
+    for proc, webm in jobs:
+        rc = await loop.run_in_executor(None, proc.wait)
+        if rc != 0:
+            err = (proc.stderr.read() or b"").decode("utf-8", "ignore")[-400:]
+            raise RuntimeError(f"ffmpeg завершился с кодом {rc}: {err}")
+        results.append(webm)
     return results

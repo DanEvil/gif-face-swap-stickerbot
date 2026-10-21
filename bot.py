@@ -475,6 +475,7 @@ async def on_own(message: Message, state: FSMContext, bot: Bot):
         message,
         "\N{INCOMING ENVELOPE} Пришли любой стикер из своего стикерпака "
         "(лучше видео-стикер).",
+        reply_markup=menu_kb(),
     )
 
 
@@ -515,6 +516,7 @@ async def on_own_sticker(message: Message, state: FSMContext, bot: Bot):
         message,
         f"\N{FILM FRAMES} Взял твой набор «{title}» ({len(srcs)} стикеров).\n\n"
         "Теперь пришли фото лица (\N{BUST IN SILHOUETTE} анфас, крупно, хорошее освещение).",
+        reply_markup=menu_kb(),
     )
 
 

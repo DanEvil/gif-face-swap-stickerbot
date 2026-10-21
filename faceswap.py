@@ -134,7 +134,7 @@ def ffmpeg_available() -> bool:
     return _ffmpeg is not None
 
 
-_MODEL_LOCK = threading.Lock()
+_MODEL_LOCK = threading.RLock()
 
 
 def _init_models():

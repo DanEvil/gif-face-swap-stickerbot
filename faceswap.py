@@ -488,17 +488,29 @@ def _greeting_candidate_srcs(count: int = 6) -> list[str]:
     packs = list_packs()
     random.shuffle(packs)
     chosen: list[str] = []
+    seen_packs: set[str] = set()
     for min_frac, cov in ((0.02, 0.7), (0.012, 0.6), (0.004, 0.4)):
         for p in packs:
-            if len(chosen) >= count:
-                break
+            if len(chosen) >= count or p in seen_packs:
+                continue
             d = os.path.join(STICKER_SRC_DIR, p)
             files = [f for f in os.listdir(d) if f.lower().endswith(exts)]
             random.shuffle(files)
             for f in files:
                 if _greeting_quality_ok(os.path.join(d, f), min_frac, cov):
                     chosen.append(os.path.join(d, f))
+                    seen_packs.add(p)
                     break
+    for p in packs:
+        if len(chosen) >= count or p in seen_packs:
+            continue
+        d = os.path.join(STICKER_SRC_DIR, p)
+        files = [f for f in os.listdir(d) if f.lower().endswith(exts)]
+        if files:
+            chosen.append(os.path.join(d, random.choice(files)))
+            seen_packs.add(p)
+        if len(chosen) >= count:
+            break
     return chosen[:count]
 
 
@@ -564,11 +576,8 @@ def build_greeting_video(face_img_path: str, out_path: str):
                 continue
         if not clips:
             raise RuntimeError("Не удалось собрать ни одной гифки")
-        while len(clips) < 6:
-            clips.append(random.choice(clips))
-        cmd = [_ffmpeg, "-y", "-loglevel", "error"]
-        for c in clips:
-            cmd += ["-stream_loop", "-1", "-t", "2", "-i", c]
+        if len(set(clips)) != len(clips) or len(clips) < 6:
+            raise RuntimeError("Файлы коллажа повторяются или паков меньше 6")
         base = "".join(f"[{i}:v]fps=10,setpts=PTS-STARTPTS[s{i}];" for i in range(6))
         grid = "[s0][s1][s2][s3][s4][s5]xstack=inputs=6:layout=0_0|w0_0|w0+w1_0|0_h0|w0_h0|w0+w1_h0:fill=black[grid]"
         variants = ((128, "768:512"), (96, "640:427"), (64, "544:363"))

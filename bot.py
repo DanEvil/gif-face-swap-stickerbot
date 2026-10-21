@@ -35,6 +35,9 @@ from faceswap import (
 router = Router()
 router.message.filter(F.chat.type == ChatType.PRIVATE)
 
+_job_sem: asyncio.Semaphore = asyncio.Semaphore(config.JOBS_CONCURRENCY)
+_job_waiting = 0
+
 CHECK = {"ok": "\N{LARGE GREEN CIRCLE}", "fail": "\N{LARGE RED CIRCLE}"}
 
 BTN_OURS = "\N{PERFORMING ARTS} Наши стикеры"
@@ -344,8 +347,25 @@ async def on_image(message: Message, state: FSMContext, bot: Bot):
     file, ext = got
     await state.update_data(busy=True)
     await state.set_state(None)
-    await process(message, bot, file, ext, data.get("srcs"))
-    await state.clear()
+    asyncio.create_task(run_job(message, bot, file, ext, data.get("srcs"), state))
+
+
+async def run_job(message: Message, bot: Bot, file, ext: str, srcs: list[str], state: FSMContext):
+    global _job_waiting
+    position = None
+    if _job_sem.locked():
+        _job_waiting += 1
+        position = _job_waiting
+    try:
+        await _job_sem.acquire()
+    finally:
+        if position:
+            _job_waiting -= 1
+    try:
+        await process(message, bot, file, ext, srcs, queue_position=position)
+    finally:
+        _job_sem.release()
+        await state.clear()
 
 
 @router.message(Flow.waiting_photo)
@@ -394,7 +414,7 @@ async def on_stray_sticker(message: Message, state: FSMContext, bot: Bot):
     await on_own_sticker(message, state, bot)
 
 
-async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str]):
+async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], queue_position: int | None = None):
     photos_dir = os.path.join(config.CACHE_DIR, "photos")
     os.makedirs(photos_dir, exist_ok=True)
     path = os.path.join(photos_dir, f"{message.from_user.id}_{round(time.time())}{ext}")
@@ -416,6 +436,8 @@ async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str]):
         )
         return
     os.remove(path)
+    if queue_position:
+        await message.answer(f"\N{HOURGLASS} Ты {queue_position}-й в очереди — жди результатов")
     status = await message.answer("\N{FERRIS WHEEL} Генерирую... Это займёт несколько минут")
 
     async def progress(done: int, total: int):

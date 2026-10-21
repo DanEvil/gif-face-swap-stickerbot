@@ -5,6 +5,7 @@ import os
 import random
 import shutil
 import subprocess
+import threading
 
 import cv2
 import numpy as np
@@ -72,25 +73,30 @@ def ffmpeg_available() -> bool:
     return _ffmpeg is not None
 
 
+_MODEL_LOCK = threading.Lock()
+
+
 def _init_models():
     global _app, _swapper
     if _app is None:
-        from insightface.app import FaceAnalysis
-        from insightface.model_zoo.model_zoo import get_model
+        with _MODEL_LOCK:
+            if _app is None:
+                from insightface.app import FaceAnalysis
+                from insightface.model_zoo.model_zoo import get_model
 
-        try:
-            import onnxruntime as _ort
-            avail = _ort.get_available_providers()
-        except Exception:
-            avail = []
-        provs = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            if "CUDAExecutionProvider" in avail
-            else ["CPUExecutionProvider"]
-        )
-        _app = FaceAnalysis(providers=provs)
-        _app.prepare(ctx_id=0, det_size=(640, 640))
-        _swapper = get_model(_ensure_inswapper_file())
+            try:
+                import onnxruntime as _ort
+                avail = _ort.get_available_providers()
+            except Exception:
+                avail = []
+            provs = (
+                ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                if "CUDAExecutionProvider" in avail
+                else ["CPUExecutionProvider"]
+            )
+            _app = FaceAnalysis(providers=provs)
+            _app.prepare(ctx_id=0, det_size=(640, 640))
+            _swapper = get_model(_ensure_inswapper_file())
     return _app
 
 
@@ -257,6 +263,7 @@ def _begin_swap_media(src: str, source_face, workdir: str, idx: int):
         "-vf", "fps=30,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:white",
         "-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0",
         "-deadline", "good", "-cpu-used", "4", "-row-mt", "1",
+        "-threads", "4",
         "-pix_fmt", "yuva420p", "-loop", "0", "-an", webm_path,
     ]
     proc = subprocess.Popen(
@@ -278,6 +285,7 @@ def _encode_from_webm(src_webm: str, out_webm: str, crf: int, extra: list[str] =
         "-vf", "fps=30,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:white",
         "-c:v", "libvpx-vp9", "-crf", str(crf), "-b:v", "0",
         "-deadline", "good", "-cpu-used", "4", "-row-mt", "1",
+        "-threads", "4",
         "-pix_fmt", "yuva420p", "-loop", "0", "-an",
         *extra, out_webm,
     ]

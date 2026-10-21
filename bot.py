@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 import random
 import time
@@ -62,11 +63,17 @@ async def cb_cancel_queue(call: CallbackQuery, bot: Bot):
 
 _tmp_msgs: dict[int, set[int]] = {}
 _result_msgs: dict[int, list[int]] = {}
+_kb_carrier: dict[int, int] = {}
 
 
 def _track_tmp(chat_id: int, mid: int | None):
     if mid:
         _tmp_msgs.setdefault(chat_id, set()).add(mid)
+
+
+def _mark_kb(chat_id: int, mid: int | None):
+    if mid:
+        _kb_carrier[chat_id] = mid
 
 
 def _snapshot(chat_id: int) -> set[int]:
@@ -111,12 +118,17 @@ async def _drop_user_msg(message: Message):
 
 
 async def _transition(message: Message, sender, *args, **kwargs):
-    """Сначала отправляем новое (обязательно с клавиатурой), затем чистим историю."""
+    """Сначала отправляем новое, затем чистим историю; reply-клавиатура не пропадает."""
     chat_id = message.chat.id
     snap = _snapshot(chat_id)
+    old_carrier = _kb_carrier.get(chat_id)
     await sender(*args, **kwargs)
     fresh = _tmp_msgs.get(chat_id, set()) - snap
-    await _purge_history(chat_id, message.bot, keep=fresh)
+    keep = set(fresh)
+    carrier = _kb_carrier.get(chat_id)
+    if carrier == old_carrier and old_carrier:
+        keep.add(old_carrier)
+    await _purge_history(chat_id, message.bot, keep=keep)
 
 CHECK = {"ok": "\N{LARGE GREEN CIRCLE}", "fail": "\N{LARGE RED CIRCLE}"}
 
@@ -281,11 +293,13 @@ async def send_greeting(message: Message):
                 parse_mode="HTML",
             )
             _track_tmp(message.chat.id, sent.message_id)
+            _mark_kb(message.chat.id, sent.message_id)
             return
         except Exception:
             pass
     sent = await message.answer(menu_text(), reply_markup=menu_kb(), disable_web_page_preview=True)
     _track_tmp(message.chat.id, sent.message_id)
+    _mark_kb(message.chat.id, sent.message_id)
 
 
 async def checks_or_gate(message: Message, state: FSMContext, bot: Bot) -> bool:
@@ -376,12 +390,34 @@ async def on_ours(message: Message, state: FSMContext, bot: Bot):
         _track_tmp(message.chat.id, sent.message_id)
         return
     await state.set_state(Flow.choose_pack)
-    await state.update_data(pack_names=pack_names)
+    await state.update_data(pack_names=pack_names, pack_page=0)
     sent = await message.answer(
-        "\N{CLAPPER BOARD} Выбери пак из библиотеки — или жми «Случайный пак» (первая кнопка):",
-        reply_markup=packs_kb(pack_names[:30]),
+        "\N{CLAPPER BOARD} Выбери пак — листай кнопками ⬅️ ➡️:",
+        reply_markup=pack_page_kb(pack_names, 0),
     )
     _track_tmp(message.chat.id, sent.message_id)
+
+
+def pack_page_kb(pack_names: list[str], page: int) -> InlineKeyboardMarkup:
+    per = 4
+    total = max(1, math.ceil(len(pack_names) / per))
+    page = max(0, min(page, total - 1))
+    rows: list[list[InlineKeyboardButton]] = []
+    for i in range(page * per, min((page + 1) * per, len(pack_names))):
+        title = pack_names[i].removesuffix(".webm").replace("_", " ")
+        rows.append([InlineKeyboardButton(
+            text=f"\N{CLAPPER BOARD} {title}", callback_data=f"pack:{i}",
+        )])
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"packpage:{page - 1}"))
+    nav.append(InlineKeyboardButton(text=f"{page + 1}/{total}", callback_data="packnoop"))
+    if page < total - 1:
+        nav.append(InlineKeyboardButton(text="➡️", callback_data=f"packpage:{page + 1}"))
+    rows.append(nav)
+    rows.append([InlineKeyboardButton(text="\N{GAME DIE} Случайный пак", callback_data="packrand")])
+    rows.append([InlineKeyboardButton(text="\N{HOUSE BUILDING} Главное меню", callback_data="go_main")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 @router.message(Flow.choose_pack, F.text == BTN_RANDOM_PACK)
@@ -404,6 +440,51 @@ async def on_pick_pack(message: Message, state: FSMContext):
             return
     sent = await message.answer("\N{NO ENTRY SIGN} Не понял выбор — нажми кнопку с названием пака")
     _track_tmp(message.chat.id, sent.message_id)
+
+
+@router.callback_query(F.data.startswith("packpage:"))
+async def cb_pack_page(call: CallbackQuery, state: FSMContext):
+    page = int(call.data.split(":", 1)[1])
+    data = await state.get_data()
+    names = data.get("pack_names") or list_packs()
+    await state.update_data(pack_page=page)
+    try:
+        await call.message.edit_reply_markup(reply_markup=pack_page_kb(names, page))
+    except Exception:
+        pass
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("pack:"))
+async def cb_pack_pick(call: CallbackQuery, state: FSMContext):
+    idx = int(call.data.split(":", 1)[1])
+    data = await state.get_data()
+    names = data.get("pack_names") or list_packs()
+    if idx < 0 or idx >= len(names):
+        await call.answer("Такого пака больше нет", show_alert=True)
+        return
+    await call.answer()
+    await start_ours_pack(call.message, state, names[idx])
+
+
+@router.callback_query(F.data == "packrand")
+async def cb_pack_rand(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    names = data.get("pack_names") or list_packs()
+    await call.answer("\N{GAME DIE} Случайный")
+    await start_ours_pack(call.message, state, random.choice(names))
+
+
+@router.callback_query(F.data == "packnoop")
+async def cb_pack_noop(call: CallbackQuery):
+    await call.answer()
+
+
+@router.callback_query(F.data == "go_main")
+async def cb_go_main(call: CallbackQuery, state: FSMContext, bot: Bot):
+    await call.answer()
+    msg = call.message
+    await _transition(msg, lambda: cmd_start(msg, state, bot))
 
 
 def _preview_frames(srcs: list[str], count: int = 3) -> list[bytes]:
@@ -471,12 +552,13 @@ async def on_own(message: Message, state: FSMContext, bot: Bot):
     if not await checks_or_gate(message, state, bot):
         return
     await state.set_state(Flow.waiting_own_sticker)
-    await _tmp_answer(
+    sent = await _tmp_answer(
         message,
         "\N{INCOMING ENVELOPE} Пришли любой стикер из своего стикерпака "
         "(лучше видео-стикер).",
         reply_markup=menu_kb(),
     )
+    _mark_kb(message.chat.id, sent.message_id)
 
 
 @router.message(Flow.waiting_own_sticker, F.sticker)
@@ -512,12 +594,13 @@ async def on_own_sticker(message: Message, state: FSMContext, bot: Bot):
     title = (st_set.title or sticker.set_name)[:48]
     await state.update_data(srcs=srcs, pack=title)
     await state.set_state(Flow.waiting_photo)
-    await _tmp_answer(
+    sent = await _tmp_answer(
         message,
         f"\N{FILM FRAMES} Взял твой набор «{title}» ({len(srcs)} стикеров).\n\n"
         "Теперь пришли фото лица (\N{BUST IN SILHOUETTE} анфас, крупно, хорошее освещение).",
         reply_markup=menu_kb(),
     )
+    _mark_kb(message.chat.id, sent.message_id)
 
 
 @router.message(Flow.waiting_own_sticker)
@@ -622,7 +705,7 @@ async def cmd_stats(message: Message, bot: Bot):
         await _tmp_answer(message, "\N{LOCK} Доступно только администраторам")
         return
     s = db.stats()
-    await _tmp_answer(
+    sent = await _tmp_answer(
         message,
         f"\N{CHART WITH UPWARDS TREND} Статистика\n\n"
         f"\N{BUST IN SILHOUETTE} Запустили бота: {s['users']}\n"
@@ -630,6 +713,7 @@ async def cmd_stats(message: Message, bot: Bot):
         f"\N{PAGE FACING UP} Стикерпаков создано: {s['packs']}",
         reply_markup=menu_kb(),
     )
+    _mark_kb(message.chat.id, sent.message_id)
 
 
 @router.message(F.sticker)

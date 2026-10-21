@@ -850,7 +850,7 @@ async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], c
 
     async def progress(done: int, total: int):
         try:
-            await status.edit_text(f"\N{FERRIS WHEEL} Обработано стикеров: {done}/{total}")
+            await status.edit_text(f"\N{FERRIS WHEEL} Обработано стикеров: {done}/{total}", reply_markup=cancel_kb())
         except TelegramBadRequest:
             pass
 

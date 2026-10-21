@@ -710,17 +710,15 @@ async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], c
         pass
     try:
         sample = random.choice(webms)
-        sticker_msg = await message.answer_sticker(FSInputFile(sample))
+        sticker_msg = await message.answer_sticker(FSInputFile(sample), reply_markup=kb)
         await _add_result(message.chat.id, sticker_msg.message_id, bot)
     except Exception:
-        pass
-    link_msg = await message.answer(
-        f"\N{GRINNING FACE WITH SMILING EYES} Готово!\n{link}\n\n"
-        "\N{SLIGHTLY SMILING FACE} Если стикеры не применились сразу — закрой и открой Telegram.",
-        reply_markup=kb,
-        disable_web_page_preview=True,
-    )
-    await _add_result(message.chat.id, link_msg.message_id, bot)
+        link_msg = await message.answer(
+            f"\N{GRINNING FACE WITH SMILING EYES} Готово!\n{link}",
+            reply_markup=kb,
+            disable_web_page_preview=True,
+        )
+        await _add_result(message.chat.id, link_msg.message_id, bot)
 
 
 @router.message()

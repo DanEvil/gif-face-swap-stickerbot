@@ -423,7 +423,11 @@ def _finalize_webm(proc, webm_path: str) -> str:
             os.remove(tmp)
 
 
-async def generate_stickers(source_face, srcs: list[str], progress_cb=None) -> list[str]:
+class GenerationCancelled(RuntimeError):
+    pass
+
+
+async def generate_stickers(source_face, srcs: list[str], progress_cb=None, cancel_cb=None) -> list[str]:
     if not srcs:
         raise RuntimeError(f"Не выбраны исходные стикеры")
     out_dir = os.path.join(CACHE_DIR, f"job{random.randrange(10**9)}")
@@ -431,11 +435,25 @@ async def generate_stickers(source_face, srcs: list[str], progress_cb=None) -> l
     loop = asyncio.get_running_loop()
     results = []
     jobs = []
-    for i, src in enumerate(srcs):
-        proc, webm = await loop.run_in_executor(None, _begin_swap_media, src, source_face, out_dir, i)
-        jobs.append((proc, webm))
-        if progress_cb:
-            await progress_cb(i + 1, len(srcs))
-    for proc, webm in jobs:
-        results.append(await loop.run_in_executor(None, _finalize_webm, proc, webm))
-    return results
+    try:
+        for i, src in enumerate(srcs):
+            if cancel_cb and cancel_cb():
+                raise GenerationCancelled("Генерация отменена")
+            proc, webm = await loop.run_in_executor(None, _begin_swap_media, src, source_face, out_dir, i)
+            jobs.append((proc, webm))
+            if progress_cb:
+                await progress_cb(i + 1, len(srcs))
+        for proc, webm in jobs:
+            if cancel_cb and cancel_cb():
+                for p, _ in jobs:
+                    if p.poll() is None:
+                        try:
+                            p.kill()
+                        except Exception:
+                            pass
+                raise GenerationCancelled("Генерация отменена")
+            results.append(await loop.run_in_executor(None, _finalize_webm, proc, webm))
+        return results
+    except BaseException:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise

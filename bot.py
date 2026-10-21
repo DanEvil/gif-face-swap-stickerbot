@@ -26,6 +26,7 @@ import db
 import packs
 import subs
 from faceswap import (
+    GenerationCancelled,
     extract_source_face,
     ffmpeg_available,
     generate_stickers,
@@ -38,6 +39,26 @@ router.message.filter(F.chat.type == ChatType.PRIVATE)
 
 _job_sem: asyncio.Semaphore = asyncio.Semaphore(config.JOBS_CONCURRENCY)
 _job_waiting = 0
+_jobs: dict[int, asyncio.Event] = {}
+
+
+def cancel_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="\N{BLACK SQUARE FOR STOP} Отменить генерацию",
+            callback_data="cancel_gen",
+        )
+    ]])
+
+
+@router.callback_query(F.data == "cancel_gen")
+async def cb_cancel_queue(call: CallbackQuery, bot: Bot):
+    ev = _jobs.get(call.from_user.id)
+    if ev is None:
+        await call.answer("Нечего отменять", show_alert=True)
+        return
+    ev.set()
+    await call.answer("Генерация будет отменена...")
 
 _tmp_msgs: dict[int, set[int]] = {}
 _result_msgs: dict[int, list[int]] = {}
@@ -528,19 +549,40 @@ async def on_image(message: Message, state: FSMContext, bot: Bot):
 
 async def run_job(message: Message, bot: Bot, file, ext: str, srcs: list[str], state: FSMContext):
     global _job_waiting
-    position = None
-    if _job_sem.locked():
-        _job_waiting += 1
-        position = _job_waiting
+    cancelled = asyncio.Event()
+    acquired = False
+    waiting_notified = False
+    _jobs[message.from_user.id] = cancelled
     try:
-        await _job_sem.acquire()
+        while True:
+            if cancelled.is_set():
+                break
+            try:
+                await asyncio.wait_for(_job_sem.acquire(), timeout=0.5)
+                acquired = True
+                break
+            except asyncio.TimeoutError:
+                if not waiting_notified:
+                    _job_waiting += 1
+                    waiting_notified = True
+                    await _tmp_answer(message, f"\N{HOURGLASS} Ты {_job_waiting}-й в очереди", reply_markup=cancel_kb())
+                continue
+        if cancelled.is_set():
+            await _tmp_answer(message, "\N{NO ENTRY SIGN} Генерация отменена")
+            return
+        try:
+            await process(message, bot, file, ext, srcs, cancel_event=cancelled)
+        except GenerationCancelled:
+            warn = ""
+            if _job_waiting > 0:
+                warn = "\n\n\N{WARNING SIGN} В очереди есть задачи: если снова отправишь фото, окажешься в конце очереди."
+            await _tmp_answer(message, "\N{CROSS MARK} Генерация отменена" + warn)
     finally:
-        if position:
+        _jobs.pop(message.from_user.id, None)
+        if acquired:
+            _job_sem.release()
+        if waiting_notified:
             _job_waiting -= 1
-    try:
-        await process(message, bot, file, ext, srcs, queue_position=position)
-    finally:
-        _job_sem.release()
         await state.clear()
 
 
@@ -572,7 +614,10 @@ async def on_stray_sticker(message: Message, state: FSMContext, bot: Bot):
     await on_own_sticker(message, state, bot)
 
 
-async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], queue_position: int | None = None):
+async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], cancel_event: asyncio.Event | None = None):
+    def _cancelled() -> bool:
+        return bool(cancel_event and cancel_event.is_set())
+
     photos_dir = os.path.join(config.CACHE_DIR, "photos")
     os.makedirs(photos_dir, exist_ok=True)
     path = os.path.join(photos_dir, f"{message.from_user.id}_{round(time.time())}{ext}")
@@ -595,9 +640,9 @@ async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], q
         )
         return
     os.remove(path)
-    if queue_position:
-        await _tmp_answer(message, f"\N{HOURGLASS} Ты {queue_position}-й в очереди — жди результатов")
-    status = await _tmp_answer(message, "\N{FERRIS WHEEL} Генерирую... Это займёт несколько минут")
+    status = await _tmp_answer(
+        message, "\N{FERRIS WHEEL} Генерирую... Это займёт несколько минут", reply_markup=cancel_kb()
+    )
 
     async def progress(done: int, total: int):
         try:
@@ -611,19 +656,35 @@ async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], q
             await status.edit_text(
                 "\N{ROUND PUSHPIN} Условия больше не выполнены:\n\n"
                 + checks_text(final)
-                + "\n\nВыполни их и отправь фото ещё раз."
+                + "\n\nВыполни их и отправь фото ещё раз.",
+                reply_markup=None,
             )
             return
-        webms = await generate_stickers(source_face, srcs, progress_cb=progress)
+        webms = await generate_stickers(source_face, srcs, progress_cb=progress, cancel_cb=_cancelled)
+        if _cancelled():
+            raise GenerationCancelled("Генерация отменена")
         link = await packs.create_sticker_pack(bot, message.from_user.id, message.from_user.first_name or "", webms)
         db.remember(message.from_user.id, message.from_user.first_name)
         db.mark_pack_created(message.from_user.id, link)
+    except GenerationCancelled:
+        warn = ""
+        if _job_waiting > 0:
+            warn = "\n\n\N{WARNING SIGN} В очереди есть задачи: если снова отправишь фото, окажешься в конце очереди."
+        try:
+            await status.edit_text("\N{CROSS MARK} Генерация отменена" + warn)
+        except TelegramBadRequest:
+            pass
+        return
     except Exception as e:
-        await status.edit_text(f"\N{CROSS MARK} Не получилось: {e}")
+        await status.edit_text(f"\N{CROSS MARK} Не получилось: {e}", reply_markup=None)
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="\N{SPARKLES} Открыть стикерпак", url=link),
     ]])
+    try:
+        await status.edit_text(reply_markup=None)
+    except Exception:
+        pass
     try:
         sample = random.choice(webms)
         sticker_msg = await message.answer_sticker(FSInputFile(sample))

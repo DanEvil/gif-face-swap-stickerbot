@@ -418,7 +418,6 @@ def pack_page_kb(pack_names: list[str], page: int) -> InlineKeyboardMarkup:
         nav.append(InlineKeyboardButton(text="➡️", callback_data=f"packpage:{page + 1}"))
     rows.append(nav)
     rows.append([InlineKeyboardButton(text="\N{GAME DIE} Случайный пак", callback_data="packrand")])
-    rows.append([InlineKeyboardButton(text="\N{HOUSE BUILDING} Главное меню", callback_data="go_main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -480,13 +479,6 @@ async def cb_pack_rand(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "packnoop")
 async def cb_pack_noop(call: CallbackQuery):
     await call.answer()
-
-
-@router.callback_query(F.data == "go_main")
-async def cb_go_main(call: CallbackQuery, state: FSMContext, bot: Bot):
-    await call.answer()
-    msg = call.message
-    await _transition(msg, lambda: cmd_start(msg, state, bot, user=call.from_user))
 
 
 def _preview_frames(srcs: list[str], count: int = 3) -> list[bytes]:

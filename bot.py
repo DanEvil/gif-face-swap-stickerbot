@@ -69,21 +69,23 @@ def _track_tmp(chat_id: int, mid: int | None):
         _tmp_msgs.setdefault(chat_id, set()).add(mid)
 
 
-async def _drop_user_msg(message: Message):
-    if message.from_user and message.from_user.is_bot:
-        return
-    try:
-        await message.bot.delete_message(message.chat.id, message.message_id)
-    except Exception:
-        pass
+def _snapshot(chat_id: int) -> set[int]:
+    return set(_tmp_msgs.get(chat_id, ()))
 
 
-async def _purge_history(chat_id: int, bot: Bot):
+async def _purge_history(chat_id: int, bot: Bot, keep: set[int] | None = None):
+    keep = keep or set()
+    fresh: set[int] = set()
     for mid in _tmp_msgs.pop(chat_id, set()):
+        if mid in keep:
+            fresh.add(mid)
+            continue
         try:
             await bot.delete_message(chat_id, mid)
         except Exception:
             pass
+    if fresh:
+        _tmp_msgs[chat_id] = fresh
 
 
 async def _add_result(chat_id: int, mid: int | None, bot: Bot):
@@ -97,6 +99,24 @@ async def _add_result(chat_id: int, mid: int | None, bot: Bot):
             await bot.delete_message(chat_id, old)
         except Exception:
             pass
+
+
+async def _drop_user_msg(message: Message):
+    if message.from_user and message.from_user.is_bot:
+        return
+    try:
+        await message.bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+
+
+async def _transition(message: Message, sender, *args, **kwargs):
+    """Сначала отправляем новое (обязательно с клавиатурой), затем чистим историю."""
+    chat_id = message.chat.id
+    snap = _snapshot(chat_id)
+    await sender(*args, **kwargs)
+    fresh = _tmp_msgs.get(chat_id, set()) - snap
+    await _purge_history(chat_id, message.bot, keep=fresh)
 
 CHECK = {"ok": "\N{LARGE GREEN CIRCLE}", "fail": "\N{LARGE RED CIRCLE}"}
 
@@ -286,50 +306,50 @@ async def checks_or_gate(message: Message, state: FSMContext, bot: Bot) -> bool:
 @router.message(F.text == BTN_MAIN)
 async def btn_main(message: Message, state: FSMContext, bot: Bot):
     await _drop_user_msg(message)
-    await _purge_history(message.chat.id, bot)
-    await cmd_start(message, state, bot)
+    await _transition(message, lambda: cmd_start(message, state, bot))
 
 
 @router.message(F.text == BTN_OURS)
 async def btn_ours(message: Message, state: FSMContext, bot: Bot):
     await _drop_user_msg(message)
-    await _purge_history(message.chat.id, bot)
-    await on_ours(message, state, bot)
+    await _transition(message, lambda: on_ours(message, state, bot))
 
 
 @router.message(F.text == BTN_OWN)
 async def btn_own(message: Message, state: FSMContext, bot: Bot):
     await _drop_user_msg(message)
-    await _purge_history(message.chat.id, bot)
-    await on_own(message, state, bot)
+    await _transition(message, lambda: on_own(message, state, bot))
 
 
 @router.message(F.text == BTN_STATS)
 async def btn_stats(message: Message, bot: Bot):
     await _drop_user_msg(message)
-    await _purge_history(message.chat.id, bot)
-    await cmd_stats(message, bot)
+    await _transition(message, lambda: cmd_stats(message, bot))
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     await _drop_user_msg(message)
-    await _purge_history(message.chat.id, bot)
-    await state.clear()
-    db.started(message.from_user.id)
-    if not ffmpeg_available():
-        sent = await message.answer("\N{WARNING SIGN} ffmpeg не найден, генерация недоступна")
-        _track_tmp(message.chat.id, sent.message_id)
-        return
-    if not list_packs():
-        sent = await message.answer(
-            f"\N{WARNING SIGN} Библиотека стикеров пуста: папка {config.STICKER_SRC_DIR}"
-        )
-        _track_tmp(message.chat.id, sent.message_id)
-        return
-    if not await checks_or_gate(message, state, bot):
-        return
-    await send_greeting(message)
+    chat_id = message.chat.id
+    snap = _snapshot(chat_id)
+    try:
+        await state.clear()
+        db.started(message.from_user.id)
+        if not ffmpeg_available():
+            await _tmp_answer(message, "\N{WARNING SIGN} ffmpeg не найден, генерация недоступна")
+            return
+        if not list_packs():
+            await _tmp_answer(
+                message,
+                f"\N{WARNING SIGN} Библиотека стикеров пуста: папка {config.STICKER_SRC_DIR}",
+            )
+            return
+        if not await checks_or_gate(message, state, bot):
+            return
+        await send_greeting(message)
+    finally:
+        fresh = _tmp_msgs.get(chat_id, set()) - snap
+        await _purge_history(chat_id, bot, keep=fresh)
 
 
 @router.callback_query(F.data == "check_gate")

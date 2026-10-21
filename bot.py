@@ -444,7 +444,7 @@ async def on_pick_pack(message: Message, state: FSMContext):
 
 
 _PACK_FILM_GROUPS: dict[str, tuple[str, ...]] = {
-    "breaking bad": ("breakingbad", "jasepinkman", "bettercallsaul"),
+    "во все тяжкие": ("тяжкие", "джессипинкман", "лучшезвонитесолу"),
 }
 _PACK_NAME_SUFFIXES = ("freetopstickers", "freetopsticker", "freetop", "stickers", "sticker", "fts")
 

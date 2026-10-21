@@ -386,7 +386,7 @@ async def cb_check(call: CallbackQuery, state: FSMContext, bot: Bot):
 async def on_ours(message: Message, state: FSMContext, bot: Bot):
     if not await checks_or_gate(message, state, bot):
         return
-    pack_names = list_packs()
+    pack_names = ordered_packs()
     if not pack_names:
         sent = await message.answer(f"\N{WARNING SIGN} Библиотека пуста: {config.STICKER_SRC_DIR}")
         _track_tmp(message.chat.id, sent.message_id)
@@ -443,11 +443,35 @@ async def on_pick_pack(message: Message, state: FSMContext):
     _track_tmp(message.chat.id, sent.message_id)
 
 
+_PACK_FILM_GROUPS: dict[str, tuple[str, ...]] = {
+    "breaking bad": ("breakingbad", "jasepinkman", "bettercallsaul"),
+}
+_PACK_NAME_SUFFIXES = ("freetopstickers", "freetopsticker", "freetop", "stickers", "sticker", "fts")
+
+
+def _film_key(name: str) -> str:
+    base = "".join(ch for ch in name.lower() if ch.isalpha())
+    for suf in _PACK_NAME_SUFFIXES:
+        if base.endswith(suf):
+            base = base[: -len(suf)]
+            break
+    for film, keys in _PACK_FILM_GROUPS.items():
+        if any(k in base for k in keys):
+            return film
+    return base
+
+
+def ordered_packs() -> list[str]:
+    names = list_packs()
+    names.sort(key=lambda n: (_film_key(n), n))
+    return names
+
+
 @router.callback_query(F.data.startswith("packpage:"))
 async def cb_pack_page(call: CallbackQuery, state: FSMContext):
     page = int(call.data.split(":", 1)[1])
     data = await state.get_data()
-    names = data.get("pack_names") or list_packs()
+    names = data.get("pack_names") or ordered_packs()
     await state.update_data(pack_page=page)
     try:
         await call.message.edit_reply_markup(reply_markup=pack_page_kb(names, page))
@@ -460,7 +484,7 @@ async def cb_pack_page(call: CallbackQuery, state: FSMContext):
 async def cb_pack_pick(call: CallbackQuery, state: FSMContext):
     idx = int(call.data.split(":", 1)[1])
     data = await state.get_data()
-    names = data.get("pack_names") or list_packs()
+    names = data.get("pack_names") or ordered_packs()
     if idx < 0 or idx >= len(names):
         await call.answer("Такого пака больше нет", show_alert=True)
         return
@@ -471,7 +495,7 @@ async def cb_pack_pick(call: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "packrand")
 async def cb_pack_rand(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    names = data.get("pack_names") or list_packs()
+    names = data.get("pack_names") or ordered_packs()
     await call.answer("\N{GAME DIE} Случайный")
     await start_ours_pack(call.message, state, random.choice(names))
 

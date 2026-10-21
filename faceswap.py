@@ -562,27 +562,32 @@ def build_greeting_video(face_img_path: str, out_path: str):
     src_face = extract_source_face(face_img_path)
     if src_face is None:
         raise RuntimeError("Не нашёл лицо на фото для коллажа")
-    srcs = _greeting_candidate_srcs(6)
+    srcs = _greeting_candidate_srcs(10)
     if not srcs:
         raise RuntimeError("Библиотека стикеров пуста")
-    try:
-        with open(os.path.join(CACHE_DIR, "greeting_sources.json"), "w", encoding="utf-8") as f:
-            json.dump([os.path.abspath(s) for s in srcs], f, ensure_ascii=False, indent=1)
-    except Exception:
-        pass
     tmpdir = os.path.join(CACHE_DIR, f"greet{random.randrange(10**9)}")
     os.makedirs(tmpdir, exist_ok=True)
     try:
         clips = []
+        used = []
         for i, src in enumerate(srcs):
+            if len(clips) >= 6:
+                break
             try:
-                clips.append(_greet_clip(src, src_face, tmpdir, i))
+                c = _greet_clip(src, src_face, tmpdir, i)
+                if c in clips:
+                    continue
+                clips.append(c)
+                used.append(src)
             except Exception:
                 continue
-        if not clips:
-            raise RuntimeError("Не удалось собрать ни одной гифки")
-        if len(set(clips)) != len(clips) or len(clips) < 6:
-            raise RuntimeError("Файлы коллажа повторяются или паков меньше 6")
+        if len(clips) < 6:
+            raise RuntimeError("Не удалось собрать 6 разных гифок для коллажа")
+        try:
+            with open(os.path.join(CACHE_DIR, "greeting_sources.json"), "w", encoding="utf-8") as f:
+                json.dump([os.path.abspath(s) for s in used], f, ensure_ascii=False, indent=1)
+        except Exception:
+            pass
         base = "".join(f"[{i}:v]fps=10,setpts=PTS-STARTPTS[s{i}];" for i in range(6))
         grid = "[s0][s1][s2][s3][s4][s5]xstack=inputs=6:layout=0_0|w0_0|w0+w1_0|0_h0|w0_h0|w0+w1_h0:fill=black[grid]"
         variants = ((128, "768:512"), (96, "640:427"), (64, "544:363"))

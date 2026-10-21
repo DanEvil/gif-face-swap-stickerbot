@@ -282,27 +282,26 @@ def _greeting_image_bytes() -> bytes | None:
     return data
 
 
-GREET_FACE = os.path.join(config.CACHE_DIR, "greeting_face.jpg")
-GREET_MP4 = os.path.join(config.CACHE_DIR, "greeting_collage.mp4")
-_greet_job_done = asyncio.Event()
-_greet_task = None
+_GREET_FACE = os.path.join(config.CACHE_DIR, "greeting_face.jpg")
+_GREET_MP4 = os.path.join(config.CACHE_DIR, "greeting_collage.mp4")
+_greet_building = False
 
 
 def _greeting_ready() -> str | None:
-    if not os.path.isfile(GREET_MP4):
+    if not os.path.isfile(_GREET_MP4):
         return None
-    if os.path.isfile(GREET_FACE) and os.path.getmtime(GREET_MP4) < os.path.getmtime(GREET_FACE):
+    if os.path.isfile(_GREET_FACE) and os.path.getmtime(_GREET_MP4) < os.path.getmtime(_GREET_FACE):
         return None
-    return GREET_MP4
+    return _GREET_MP4
 
 
 def _greeting_needs_build() -> bool:
-    if not os.path.isfile(GREET_FACE):
+    if not os.path.isfile(_GREET_FACE):
         return False
-    if not os.path.isfile(GREET_MP4):
+    if not os.path.isfile(_GREET_MP4):
         return True
-    mt = os.path.getmtime(GREET_MP4)
-    if mt < os.path.getmtime(GREET_FACE):
+    mt = os.path.getmtime(_GREET_MP4)
+    if mt < os.path.getmtime(_GREET_FACE):
         return True
     if mt < greeting_sources_mtime():
         return True
@@ -310,37 +309,37 @@ def _greeting_needs_build() -> bool:
 
 
 def _build_greeting_blocking():
-    if not os.path.isfile(GREET_FACE):
+    if not os.path.isfile(_GREET_FACE):
         return None
-    tmp = GREET_MP4 + ".part.mp4"
-    out = build_greeting_video(GREET_FACE, tmp)
+    tmp = _GREET_MP4 + ".part.mp4"
+    out = build_greeting_video(_GREET_FACE, tmp)
     if not out:
         return None
-    os.makedirs(os.path.dirname(GREET_MP4), exist_ok=True)
-    os.replace(tmp, GREET_MP4)
-    return GREET_MP4
+    os.makedirs(os.path.dirname(_GREET_MP4), exist_ok=True)
+    os.replace(tmp, _GREET_MP4)
+    return _GREET_MP4
 
 
 async def _greeting_worker(bot: Bot | None = None, chat_id: int | None = None):
-    global _greet_task
-    if _greet_task is not None and not _greet_task.done():
+    global _greet_building
+    if _greet_building:
         return
-    def _go():
-        try:
-            return _build_greeting_blocking()
-        except Exception as e:
-            print(f"[greeting] не удалось собрать коллаж: {e}")
-            return None
-    _greet_task = asyncio.get_running_loop().create_task(
-        asyncio.get_event_loop().run_in_executor(None, _go)
-    )
-    mp4 = await _greet_task
-    _greet_job_done.set()
-    if mp4 and bot and chat_id:
-        try:
-            await bot.send_animation(chat_id, FSInputFile(mp4))
-        except Exception:
-            pass
+    _greet_building = True
+    try:
+        def _go():
+            try:
+                return _build_greeting_blocking()
+            except Exception as e:
+                print(f"[greeting] не удалось собрать коллаж: {e}")
+                return None
+        mp4 = await asyncio.get_running_loop().run_in_executor(None, _go)
+        if mp4 and bot and chat_id:
+            try:
+                await bot.send_animation(chat_id, FSInputFile(mp4))
+            except Exception:
+                pass
+    finally:
+        _greet_building = False
 
 
 async def send_greeting(message: Message):

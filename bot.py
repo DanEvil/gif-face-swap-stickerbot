@@ -30,6 +30,7 @@ import subs
 from faceswap import (
     GenerationCancelled,
     build_greeting_video,
+    extract_source_face,
     ffmpeg_available,
     generate_stickers,
     greeting_sources_mtime,

@@ -353,6 +353,10 @@ def _swap_frames(frames, faces, source_face):
 def _begin_swap_media(src: str, source_face, workdir: str, idx: int):
     frames, fps = _read_media(src)
     faces = _faces_for_frames(src, frames)
+    max_frames = max(10, int(2.0 * fps))
+    if len(frames) > max_frames:
+        frames = frames[:max_frames]
+        faces = faces[:max_frames]
     h, w = frames[0].shape[:2]
     webm_path = os.path.join(workdir, f"sticker_{idx}.webm")
     if not _ffmpeg:

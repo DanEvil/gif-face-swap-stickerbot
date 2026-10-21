@@ -628,6 +628,7 @@ async def cmd_stats(message: Message, bot: Bot):
         f"\N{BUST IN SILHOUETTE} Запустили бота: {s['users']}\n"
         f"\N{WHITE HEAVY CHECK MARK} Прошли гейт: {s['gated']}\n"
         f"\N{PAGE FACING UP} Стикерпаков создано: {s['packs']}",
+        reply_markup=menu_kb(),
     )
 
 

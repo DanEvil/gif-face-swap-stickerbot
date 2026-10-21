@@ -186,7 +186,7 @@ def _restore_face(frame, target_face):
             feed["weight"] = np.array([1]).astype(np.float64)
     y = sess.run(None, feed)[0][0]
     y = np.clip(y, -1, 1)
-    y = ((y + 1) / 2 * 255.0).round().astype(np.uint8)[:, :, ::-1]
+    y = ((y + 1) / 2 * 255.0).round().astype(np.uint8).transpose(1, 2, 0)[:, :, ::-1]
     mask = np.ones((512, 512), dtype="float32")
     mask = cv2.GaussianBlur(mask, (0, 0), 20)
     mask = np.maximum(mask, 0)

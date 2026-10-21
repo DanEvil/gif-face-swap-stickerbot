@@ -48,6 +48,15 @@ def _track_tmp(chat_id: int, mid: int | None):
         _tmp_msgs.setdefault(chat_id, set()).add(mid)
 
 
+async def _drop_user_msg(message: Message):
+    if message.from_user and message.from_user.is_bot:
+        return
+    try:
+        await message.bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        pass
+
+
 async def _purge_history(chat_id: int, bot: Bot):
     for mid in _tmp_msgs.pop(chat_id, set()):
         try:
@@ -255,30 +264,35 @@ async def checks_or_gate(message: Message, state: FSMContext, bot: Bot) -> bool:
 
 @router.message(F.text == BTN_MAIN)
 async def btn_main(message: Message, state: FSMContext, bot: Bot):
+    await _drop_user_msg(message)
     await _purge_history(message.chat.id, bot)
     await cmd_start(message, state, bot)
 
 
 @router.message(F.text == BTN_OURS)
 async def btn_ours(message: Message, state: FSMContext, bot: Bot):
+    await _drop_user_msg(message)
     await _purge_history(message.chat.id, bot)
     await on_ours(message, state, bot)
 
 
 @router.message(F.text == BTN_OWN)
 async def btn_own(message: Message, state: FSMContext, bot: Bot):
+    await _drop_user_msg(message)
     await _purge_history(message.chat.id, bot)
     await on_own(message, state, bot)
 
 
 @router.message(F.text == BTN_STATS)
 async def btn_stats(message: Message, bot: Bot):
+    await _drop_user_msg(message)
     await _purge_history(message.chat.id, bot)
     await cmd_stats(message, bot)
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, bot: Bot):
+    await _drop_user_msg(message)
     await _purge_history(message.chat.id, bot)
     await state.clear()
     db.started(message.from_user.id)
@@ -331,6 +345,7 @@ async def on_ours(message: Message, state: FSMContext, bot: Bot):
 
 @router.message(Flow.choose_pack, F.text == BTN_RANDOM_PACK)
 async def on_random_pack(message: Message, state: FSMContext):
+    await _drop_user_msg(message)
     data = await state.get_data()
     names = data.get("pack_names") or list_packs()
     await start_ours_pack(message, state, random.choice(names))
@@ -338,6 +353,7 @@ async def on_random_pack(message: Message, state: FSMContext):
 
 @router.message(Flow.choose_pack, F.text)
 async def on_pick_pack(message: Message, state: FSMContext):
+    await _drop_user_msg(message)
     data = await state.get_data()
     names = data.get("pack_names") or list_packs()
     wanted = message.text.removeprefix(f"\N{CLAPPER BOARD} ").lower()

@@ -226,6 +226,21 @@ async def btn_main(message: Message, state: FSMContext, bot: Bot):
     await cmd_start(message, state, bot)
 
 
+@router.message(F.text == BTN_OURS)
+async def btn_ours(message: Message, state: FSMContext, bot: Bot):
+    await on_ours(message, state, bot)
+
+
+@router.message(F.text == BTN_OWN)
+async def btn_own(message: Message, state: FSMContext, bot: Bot):
+    await on_own(message, state, bot)
+
+
+@router.message(F.text == BTN_STATS)
+async def btn_stats(message: Message, bot: Bot):
+    await cmd_stats(message, bot)
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, bot: Bot):
     await state.clear()
@@ -463,21 +478,6 @@ async def on_other(message: Message):
     await message.answer(
         "\N{BUST IN SILHOUETTE} Пришли фото лица — обычное фото снимком, без текста."
     )
-
-
-@router.message(F.text == BTN_OURS)
-async def btn_ours(message: Message, state: FSMContext, bot: Bot):
-    await on_ours(message, state, bot)
-
-
-@router.message(F.text == BTN_OWN)
-async def btn_own(message: Message, state: FSMContext, bot: Bot):
-    await on_own(message, state, bot)
-
-
-@router.message(F.text == BTN_STATS)
-async def btn_stats(message: Message, bot: Bot):
-    await cmd_stats(message, bot)
 
 
 @router.message(Command("stats"))

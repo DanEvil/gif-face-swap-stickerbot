@@ -123,6 +123,90 @@ def menu_text() -> str:
     )
 
 
+def greeting_caption() -> str:
+    return (
+        "<b>Что умеет этот бот?</b>\n\n"
+        "Привет! Я создам тебе персональный стикерпак по фильмам и сериалам.\n\n"
+        f"\N{PERFORMING ARTS} «Наши стикеры» — тематические паки из библиотеки\n"
+        f"\N{GRINNING FACE} «Свои стикеры» — пришли стикер из своего пака, и я возьму его за основу\n\n"
+        "Для любого варианта потом пришли фото лица "
+        "(\N{BUST IN SILHOUETTE} анфас, крупно, хорошее освещение).\n\n"
+        "Нажми «Начать» и выбирай!"
+    )
+
+
+def _greeting_image_bytes() -> bytes | None:
+    import cv2
+    import numpy as np
+
+    cache_path = os.path.join(config.CACHE_DIR, "greeting.jpg")
+    try:
+        if os.path.isfile(cache_path):
+            with open(cache_path, "rb") as f:
+                return f.read()
+    except Exception:
+        pass
+    packs = list_packs()
+    if not packs:
+        return None
+    random.shuffle(packs)
+    frames = []
+    for pack in packs:
+        files = pick_pack_files(pack, 10)
+        if not files:
+            continue
+        for src in random.sample(files, min(2, len(files))):
+            cap = cv2.VideoCapture(src)
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, total // 3))
+            ok, frame = cap.read()
+            cap.release()
+            if ok:
+                frames.append(frame)
+            if len(frames) >= 6:
+                break
+        if len(frames) >= 6:
+            break
+    if not frames:
+        return None
+    frames = frames[:6]
+    while len(frames) < 6:
+        frames.append(frames[-1])
+    tiles = [cv2.resize(f, (512, 512)) for f in frames]
+    try:
+        grid = np.vstack([np.hstack(tiles[0:3]), np.hstack(tiles[3:6])])
+    except Exception:
+        return None
+    ok, buf = cv2.imencode(".jpg", grid, [cv2.IMWRITE_JPEG_QUALITY, 88])
+    if not ok:
+        return None
+    data = buf.tobytes()
+    try:
+        with open(cache_path, "wb") as f:
+            f.write(data)
+    except Exception:
+        pass
+    return data
+
+
+async def send_greeting(message: Message):
+    img = await asyncio.get_running_loop().run_in_executor(None, _greeting_image_bytes)
+    if img:
+        try:
+            from aiogram.types import BufferedInputFile
+
+            await message.answer_photo(
+                BufferedInputFile(img, filename="start.jpg"),
+                caption=greeting_caption(),
+                reply_markup=menu_kb(),
+                parse_mode="HTML",
+            )
+            return
+        except Exception:
+            pass
+    await message.answer(menu_text(), reply_markup=menu_kb(), disable_web_page_preview=True)
+
+
 async def checks_or_gate(message: Message, state: FSMContext, bot: Bot) -> bool:
     ch = await subs.checks(bot, message.from_user.id)
     if subs.flattened(ch):
@@ -151,7 +235,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
         return
     if not await checks_or_gate(message, state, bot):
         return
-    await message.answer(menu_text(), reply_markup=menu_kb(), disable_web_page_preview=True)
+    await send_greeting(message)
 
 
 @router.callback_query(F.data == "check_gate")
@@ -164,7 +248,7 @@ async def cb_check(call: CallbackQuery, state: FSMContext, bot: Bot):
         except TelegramBadRequest:
             pass
         await call.answer()
-        await call.message.answer(menu_text(), reply_markup=menu_kb(), disable_web_page_preview=True)
+        await send_greeting(call.message)
         return
     await call.answer("Условия пока не выполнены", show_alert=True)
 

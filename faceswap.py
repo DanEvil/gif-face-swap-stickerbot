@@ -459,27 +459,41 @@ async def generate_stickers(source_face, srcs: list[str], progress_cb=None, canc
         raise
 
 
-def pick_greeting_srcs(count: int = 6) -> list[str]:
-    packs = list_packs()
-    pool_by_pack = []
-    for p in packs:
+def _greeting_fixed_srcs(count: int = 6) -> list[str]:
+    exts = (".gif", ".png", ".webp", ".webm")
+    pool: list[list[str]] = []
+    for p in sorted(list_packs()):
         d = os.path.join(STICKER_SRC_DIR, p)
-        files = [
-            os.path.join(d, f)
-            for f in sorted(os.listdir(d))
-            if f.lower().endswith((".gif", ".png", ".webp", ".webm"))
-        ]
+        files = [os.path.join(d, f) for f in sorted(os.listdir(d)) if f.lower().endswith(exts)]
         if files:
-            pool_by_pack.append(files)
-    if not pool_by_pack:
+            pool.append(files)
+    if not pool:
         return []
-    random.shuffle(pool_by_pack)
-    chosen = []
-    for files in pool_by_pack:
-        chosen.append(random.choice(files))
+    chosen: list[str] = []
+    for files in pool:
+        chosen.append(files[0])
         if len(chosen) >= count:
             break
+    while len(chosen) < count and any(len(files) > 0 for files in pool):
+        for files in pool:
+            if len(chosen) < count and len(files) >= 2 and files[1] not in chosen:
+                chosen.append(files[1])
+            if len(chosen) >= count:
+                break
     return chosen[:count]
+
+
+def greeting_sources_mtime() -> float:
+    newest = 0.0
+    for p in list_packs():
+        d = os.path.join(STICKER_SRC_DIR, p)
+        for f in os.listdir(d):
+            try:
+                mt = os.stat(os.path.join(d, f)).st_mtime
+            except OSError:
+                continue
+            newest = max(newest, mt)
+    return newest
 
 
 def _greet_clip(src: str, source_face, tmpdir: str, idx: int):
@@ -513,8 +527,11 @@ def _greet_clip(src: str, source_face, tmpdir: str, idx: int):
     return out
 
 
-def build_greeting_video(source_face, out_path: str):
-    srcs = pick_greeting_srcs(6)
+def build_greeting_video(face_img_path: str, out_path: str):
+    src_face = extract_source_face(face_img_path)
+    if src_face is None:
+        raise RuntimeError("Не нашёл лицо на фото для коллажа")
+    srcs = _greeting_fixed_srcs(6)
     if not srcs:
         raise RuntimeError("Библиотека стикеров пуста")
     tmpdir = os.path.join(CACHE_DIR, f"greet{random.randrange(10**9)}")
@@ -523,7 +540,7 @@ def build_greeting_video(source_face, out_path: str):
         clips = []
         for i, src in enumerate(srcs):
             try:
-                clips.append(_greet_clip(src, source_face, tmpdir, i))
+                clips.append(_greet_clip(src, src_face, tmpdir, i))
             except Exception:
                 continue
         if not clips:

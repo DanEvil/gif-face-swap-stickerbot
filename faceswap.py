@@ -363,8 +363,8 @@ def _begin_swap_media(src: str, source_face, workdir: str, idx: int):
         "-r", f"{fps:.4f}", "-i", "-",
         "-vf", "fps=30,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:white",
         "-c:v", "libvpx-vp9", "-crf", "26", "-b:v", "0",
-        "-deadline", "good", "-cpu-used", "4", "-row-mt", "1",
-        "-threads", "4",
+        "-deadline", "realtime", "-cpu-used", "5", "-row-mt", "1",
+        "-threads", "6",
         "-pix_fmt", "yuva420p", "-loop", "0", "-an", webm_path,
     ]
     proc = subprocess.Popen(
@@ -385,8 +385,8 @@ def _encode_from_webm(src_webm: str, out_webm: str, crf: int, extra: list[str] =
         _ffmpeg, "-y", "-loglevel", "error", "-i", src_webm,
         "-vf", "fps=30,scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:white",
         "-c:v", "libvpx-vp9", "-crf", str(crf), "-b:v", "0",
-        "-deadline", "good", "-cpu-used", "4", "-row-mt", "1",
-        "-threads", "4",
+        "-deadline", "realtime", "-cpu-used", "5", "-row-mt", "1",
+        "-threads", "6",
         "-pix_fmt", "yuva420p", "-loop", "0", "-an",
         *extra, out_webm,
     ]

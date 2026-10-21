@@ -97,8 +97,8 @@ Volumes: `./stickers_src` (библиотека паков), `./data` (sqlite), 
 - **Реставрация лица CodeFormer** (ONNX 377 МБ, `FS_RESTORE=1` по умолчанию, `FS_RESTORE_BLEND=80`) — inswapper_128 восстанавливает лицо в 128×128, CodeFormer возвращает резкость/детали после свапа (~37 мс/кадр на GPU). Модель: facefusion/models-3.0.0; лицензия weights — только некоммерческое использование (S-Lab License).
 - **Адаптивный VP9 CRF** — кодирование начинается с `crf 26`; если не влезает в лимит Telegram 256 КБ — лесенка 30→34→38→42 + обрезка до 2 с.
 
-## Тест пайплайна (без токена)
+## Тест пайплайна (без токена) — на GPU, внутри контейнера
 ```powershell
-.venv\Scripts\python smoke_test.py
+docker exec faceswap-stickerbot python smoke_test.py
 ```
-Делает из сэмпла insightface тестовый GIF и прогоняет swap → webm.
+Делает из сэмпла insightface тестовый GIF и прогоняет swap → webm. Тесты выполняются на GPU (CUDAExecutionProvider в контейнере с nvidia runtime).

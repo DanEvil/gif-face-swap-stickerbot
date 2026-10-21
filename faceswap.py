@@ -565,6 +565,11 @@ def build_greeting_video(face_img_path: str, out_path: str):
     srcs = _greeting_candidate_srcs(6)
     if not srcs:
         raise RuntimeError("Библиотека стикеров пуста")
+    try:
+        with open(os.path.join(CACHE_DIR, "greeting_sources.json"), "w", encoding="utf-8") as f:
+            json.dump([os.path.abspath(s) for s in srcs], f, ensure_ascii=False, indent=1)
+    except Exception:
+        pass
     tmpdir = os.path.join(CACHE_DIR, f"greet{random.randrange(10**9)}")
     os.makedirs(tmpdir, exist_ok=True)
     try:

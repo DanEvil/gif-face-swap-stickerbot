@@ -279,9 +279,72 @@ def _read_static_frames(path: str):
 
 
 def _read_media(path: str):
-    if path.lower().endswith((".webp", ".png")):
+    base = path.lower()
+    if base.endswith((".webp", ".png")):
         return _read_static_frames(path)
+    if base.endswith(".webm"):
+        return _read_gif_frames(_ensure_master(path))
     return _read_gif_frames(path)
+
+
+_MASTER_DIR = os.path.join(CACHE_DIR, "masters")
+_nvenc_ok: bool | None = None
+
+
+def _master_path(src: str) -> str:
+    st = os.stat(src)
+    h = hashlib.sha1()
+    h.update(os.path.abspath(src).encode("utf-8", "ignore"))
+    h.update(str(int(st.st_mtime)).encode())
+    h.update(str(st.st_size).encode())
+    return os.path.join(_MASTER_DIR, h.hexdigest() + ".mp4")
+
+
+def _ensure_master(src: str) -> str:
+    global _nvenc_ok
+    p = _master_path(src)
+    if os.path.isfile(p) and os.path.getsize(p) > 0:
+        return p
+    os.makedirs(_MASTER_DIR, exist_ok=True)
+    tmp = p + f".part{random.randrange(10 ** 6)}.mp4"
+    if _nvenc_ok is None:
+        probe = subprocess.run(
+            [_ffmpeg, "-hide_banner", "-encoders"], capture_output=True
+        )
+        _nvenc_ok = b"h264_nvenc" in (probe.stdout or b"")
+    if _nvenc_ok:
+        cmd = [
+            _ffmpeg, "-y", "-loglevel", "error",
+            "-hwaccel", "cuda", "-i", src,
+            "-vf", "fps=25",
+            "-c:v", "h264_nvenc", "-preset", "p1", "-rc", "vbr",
+            "-cq", "16", "-b:v", "0",
+            "-an", tmp,
+        ]
+    else:
+        cmd = [
+            _ffmpeg, "-y", "-loglevel", "error", "-i", src,
+            "-vf", "fps=25",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "14",
+            "-an", tmp,
+        ]
+    res = subprocess.run(cmd, capture_output=True)
+    if res.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        return src  # фолбэк: работаем с исходником как раньше
+    os.replace(tmp, p)
+    return p
+
+
+def warm_face_cache(path: str):
+    try:
+        frames, _ = _read_media(path)
+        _faces_for_frames(path, frames)
+    except Exception:
+        pass
 
 
 _SRC_FACES_DIR = os.path.join(CACHE_DIR, "src_faces")

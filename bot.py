@@ -302,10 +302,11 @@ async def send_greeting(message: Message):
     _mark_kb(message.chat.id, sent.message_id)
 
 
-async def checks_or_gate(message: Message, state: FSMContext, bot: Bot) -> bool:
-    ch = await subs.checks(bot, message.from_user.id)
+async def checks_or_gate(message: Message, state: FSMContext, bot: Bot, user=None) -> bool:
+    user = user or message.from_user
+    ch = await subs.checks(bot, user.id)
     if subs.flattened(ch):
-        db.remember(message.from_user.id, message.from_user.first_name)
+        db.remember(user.id, user.first_name)
         return True
     await state.clear()
     sent = await message.answer(
@@ -342,13 +343,14 @@ async def btn_stats(message: Message, bot: Bot):
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext, bot: Bot):
+async def cmd_start(message: Message, state: FSMContext, bot: Bot, user=None):
+    user = user or message.from_user
     await _drop_user_msg(message)
     chat_id = message.chat.id
     snap = _snapshot(chat_id)
     try:
         await state.clear()
-        db.started(message.from_user.id)
+        db.started(user.id)
         if not ffmpeg_available():
             await _tmp_answer(message, "\N{WARNING SIGN} ffmpeg не найден, генерация недоступна")
             return
@@ -358,7 +360,7 @@ async def cmd_start(message: Message, state: FSMContext, bot: Bot):
                 f"\N{WARNING SIGN} Библиотека стикеров пуста: папка {config.STICKER_SRC_DIR}",
             )
             return
-        if not await checks_or_gate(message, state, bot):
+        if not await checks_or_gate(message, state, bot, user=user):
             return
         await send_greeting(message)
     finally:
@@ -484,7 +486,7 @@ async def cb_pack_noop(call: CallbackQuery):
 async def cb_go_main(call: CallbackQuery, state: FSMContext, bot: Bot):
     await call.answer()
     msg = call.message
-    await _transition(msg, lambda: cmd_start(msg, state, bot))
+    await _transition(msg, lambda: cmd_start(msg, state, bot, user=call.from_user))
 
 
 def _preview_frames(srcs: list[str], count: int = 3) -> list[bytes]:

@@ -2,6 +2,7 @@
 import math
 import os
 import random
+import shutil
 import time
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -28,6 +29,7 @@ import packs
 import subs
 from faceswap import (
     GenerationCancelled,
+    build_greeting_video,
     extract_source_face,
     ffmpeg_available,
     generate_stickers,
@@ -280,7 +282,85 @@ def _greeting_image_bytes() -> bytes | None:
     return data
 
 
+def _face_file(uid: int) -> str | None:
+    path = os.path.join(config.CACHE_DIR, "faces", f"{uid}.jpg")
+    return path if os.path.isfile(path) else None
+
+
+def _greeting_mp4(uid: int) -> str:
+    return os.path.join(config.CACHE_DIR, "greet", f"{uid}.mp4")
+
+
+def _greeting_fresh(uid: int) -> str | None:
+    mp4 = _greeting_mp4(uid)
+    face = _face_file(uid)
+    if not os.path.isfile(mp4):
+        return None
+    if face and os.path.getmtime(mp4) < os.path.getmtime(face):
+        return None
+    return mp4
+
+
+def _build_greeting_video_blocking(uid: int, force: bool = False):
+    face = _face_file(uid)
+    if not face:
+        return None
+    mp4 = _greeting_mp4(uid)
+    os.makedirs(os.path.dirname(mp4), exist_ok=True)
+    if not force and os.path.isfile(mp4) and os.path.getmtime(mp4) >= os.path.getmtime(face):
+        return mp4
+    src_face = extract_source_face(face)
+    if src_face is None:
+        return None
+    tmp = mp4 + ".part.mp4"
+    out = build_greeting_video(src_face, tmp)
+    if not out:
+        return None
+    os.replace(tmp, mp4)
+    return mp4
+
+
+_greet_jobs: set[int] = set()
+_greet_lock = asyncio.Lock()
+
+
+async def _bg_greeting_video(bot: Bot, chat_id: int, uid: int, force: bool = False):
+    async with _greet_lock:
+        if uid in _greet_jobs:
+            return
+        _greet_jobs.add(uid)
+    try:
+        mp4 = await asyncio.get_running_loop().run_in_executor(
+            None, _build_greeting_video_blocking, uid, force
+        )
+        if mp4 and force and chat_id:
+            try:
+                await bot.send_animation(chat_id, FSInputFile(mp4))
+            except Exception:
+                pass
+    finally:
+        _greet_jobs.discard(uid)
+
+
 async def send_greeting(message: Message):
+    uid = message.from_user.id if message.from_user else 0
+    mp4 = _greeting_fresh(uid)
+    if mp4:
+        try:
+            sent = await message.answer_animation(
+                FSInputFile(mp4),
+                caption=greeting_caption(),
+                reply_markup=menu_kb(),
+                parse_mode="HTML",
+            )
+            _track_tmp(message.chat.id, sent.message_id)
+            _mark_kb(message.chat.id, sent.message_id)
+            return
+        except Exception:
+            pass
+    face_path = _face_file(uid)
+    if face_path and mp4 is None:
+        asyncio.create_task(_bg_greeting_video(message.bot, message.chat.id, uid))
     img = await asyncio.get_running_loop().run_in_executor(None, _greeting_image_bytes)
     if img:
         try:
@@ -764,6 +844,12 @@ async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], c
             "Пришли фото с одним лицом в анфас и хорошим светом.",
         )
         return
+    try:
+        faces_dir = os.path.join(config.CACHE_DIR, "faces")
+        os.makedirs(faces_dir, exist_ok=True)
+        shutil.copyfile(path, os.path.join(faces_dir, f"{message.from_user.id}.jpg"))
+    except Exception:
+        pass
     os.remove(path)
     status = await _tmp_answer(
         message, "\N{FERRIS WHEEL} Генерирую... Это займёт несколько минут", reply_markup=cancel_kb()
@@ -791,6 +877,7 @@ async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], c
         link = await packs.create_sticker_pack(bot, message.from_user.id, message.from_user.first_name or "", webms)
         db.remember(message.from_user.id, message.from_user.first_name)
         db.mark_pack_created(message.from_user.id, link)
+        asyncio.create_task(_bg_greeting_video(bot, message.chat.id, message.from_user.id, force=True))
     except GenerationCancelled:
         warn = ""
         if _job_waiting > 0:

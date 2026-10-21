@@ -457,3 +457,97 @@ async def generate_stickers(source_face, srcs: list[str], progress_cb=None, canc
     except BaseException:
         shutil.rmtree(out_dir, ignore_errors=True)
         raise
+
+
+def pick_greeting_srcs(count: int = 6) -> list[str]:
+    packs = list_packs()
+    pool_by_pack = []
+    for p in packs:
+        d = os.path.join(STICKER_SRC_DIR, p)
+        files = [
+            os.path.join(d, f)
+            for f in sorted(os.listdir(d))
+            if f.lower().endswith((".gif", ".png", ".webp", ".webm"))
+        ]
+        if files:
+            pool_by_pack.append(files)
+    if not pool_by_pack:
+        return []
+    random.shuffle(pool_by_pack)
+    chosen = []
+    for files in pool_by_pack:
+        chosen.append(random.choice(files))
+        if len(chosen) >= count:
+            break
+    return chosen[:count]
+
+
+def _greet_clip(src: str, source_face, tmpdir: str, idx: int):
+    frames, fps = _read_media(src)
+    faces = _faces_for_frames(src, frames)
+    swapped = _swap_frames(frames, faces, source_face)
+    h, w = swapped[0].shape[:2]
+    out = os.path.join(tmpdir, f"clip_{idx}.mp4")
+    cmd = [
+        _ffmpeg, "-y", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}",
+        "-r", f"{fps:.4f}", "-i", "-",
+        "-vf", "fps=25,scale=512:512:force_original_aspect_ratio=decrease,"
+               "pad=512:512:(ow-iw)/2:(oh-ih)/2:black",
+        "-t", "2", "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
+        "-pix_fmt", "yuv420p", "-an", out,
+    ]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        for frame in swapped:
+            proc.stdin.write(np.ascontiguousarray(frame).tobytes())
+        proc.stdin.close()
+    except Exception:
+        proc.kill()
+        raise
+    rc = proc.wait()
+    if rc != 0:
+        err = (proc.stderr.read() or b"").decode("utf-8", "ignore")[-300:]
+        raise RuntimeError(f"ffmpeg({rc}): {err}")
+    proc.stderr.close()
+    return out
+
+
+def build_greeting_video(source_face, out_path: str):
+    srcs = pick_greeting_srcs(6)
+    if not srcs:
+        raise RuntimeError("Библиотека стикеров пуста")
+    tmpdir = os.path.join(CACHE_DIR, f"greet{random.randrange(10**9)}")
+    os.makedirs(tmpdir, exist_ok=True)
+    try:
+        clips = []
+        for i, src in enumerate(srcs):
+            try:
+                clips.append(_greet_clip(src, source_face, tmpdir, i))
+            except Exception:
+                continue
+        if not clips:
+            raise RuntimeError("Не удалось собрать ни одной гифки")
+        while len(clips) < 6:
+            clips.append(random.choice(clips))
+        cmd = [_ffmpeg, "-y", "-loglevel", "error"]
+        for c in clips:
+            cmd += ["-stream_loop", "-1", "-t", "2", "-i", c]
+        fc = (
+            "".join(f"[{i}:v]" for i in range(6))
+            + f"xstack=inputs=6:layout=0_0|w0_0|w0+w1_0|0_h0|w0_h0|w0+w1_h0:fill=black[out]"
+        )
+        cmd += [
+            "-filter_complex", fc, "-map", "[out]",
+            "-r", "25", "-c:v", "libx264", "-crf", "23", "-preset", "veryfast",
+            "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t", "2", out_path,
+        ]
+        res = subprocess.run(cmd, capture_output=True)
+        if res.returncode != 0:
+            err = (res.stderr or b"").decode("utf-8", "ignore")[-300:]
+            raise RuntimeError(f"ffmpeg сборки коллажа({res.returncode}): {err}")
+        if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
+            raise RuntimeError("Пустой коллаж")
+        return out_path
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)

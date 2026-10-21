@@ -713,7 +713,7 @@ async def on_own_sticker(message: Message, state: FSMContext, bot: Bot):
     srcs = list(srcs)
     try:
         await status.edit_text(
-            f"\N{CHECK MARK BUTTON} Набор «{(st_set.title or sticker.set_name)[:40]}» скачан ({len(srcs)} шт)",
+            f"\N{WHITE HEAVY CHECK MARK} Набор «{(st_set.title or sticker.set_name)[:40]}» скачан ({len(srcs)} шт)",
             reply_markup=None,
         )
     except TelegramBadRequest:

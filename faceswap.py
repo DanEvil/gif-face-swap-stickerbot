@@ -459,27 +459,46 @@ async def generate_stickers(source_face, srcs: list[str], progress_cb=None, canc
         raise
 
 
-def _greeting_fixed_srcs(count: int = 6) -> list[str]:
+def _greeting_quality_ok(path: str, min_frac: float, coverage: float) -> bool:
+    try:
+        frames, _ = _read_media(path)
+        faces = _faces_for_frames(path, frames)
+    except Exception:
+        return False
+    if not frames:
+        return False
+    step = max(1, len(frames) // 8)
+    hits = 0
+    total = 0
+    for idx in range(0, len(frames), step):
+        total += 1
+        f = faces[idx] if idx < len(faces) else None
+        if f is None:
+            continue
+        h, w = frames[idx].shape[:2]
+        bbox = f.bbox
+        frac = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) / (w * h)
+        if frac >= min_frac:
+            hits += 1
+    return bool(total and hits / total >= coverage)
+
+
+def _greeting_candidate_srcs(count: int = 6) -> list[str]:
     exts = (".gif", ".png", ".webp", ".webm")
-    pool: list[list[str]] = []
-    for p in sorted(list_packs()):
-        d = os.path.join(STICKER_SRC_DIR, p)
-        files = [os.path.join(d, f) for f in sorted(os.listdir(d)) if f.lower().endswith(exts)]
-        if files:
-            pool.append(files)
-    if not pool:
-        return []
+    packs = list_packs()
+    random.shuffle(packs)
     chosen: list[str] = []
-    for files in pool:
-        chosen.append(files[0])
-        if len(chosen) >= count:
-            break
-    while len(chosen) < count and any(len(files) > 0 for files in pool):
-        for files in pool:
-            if len(chosen) < count and len(files) >= 2 and files[1] not in chosen:
-                chosen.append(files[1])
+    for min_frac, cov in ((0.02, 0.7), (0.012, 0.6), (0.004, 0.4)):
+        for p in packs:
             if len(chosen) >= count:
                 break
+            d = os.path.join(STICKER_SRC_DIR, p)
+            files = [f for f in os.listdir(d) if f.lower().endswith(exts)]
+            random.shuffle(files)
+            for f in files:
+                if _greeting_quality_ok(os.path.join(d, f), min_frac, cov):
+                    chosen.append(os.path.join(d, f))
+                    break
     return chosen[:count]
 
 
@@ -531,7 +550,7 @@ def build_greeting_video(face_img_path: str, out_path: str):
     src_face = extract_source_face(face_img_path)
     if src_face is None:
         raise RuntimeError("Не нашёл лицо на фото для коллажа")
-    srcs = _greeting_fixed_srcs(6)
+    srcs = _greeting_candidate_srcs(6)
     if not srcs:
         raise RuntimeError("Библиотека стикеров пуста")
     tmpdir = os.path.join(CACHE_DIR, f"greet{random.randrange(10**9)}")
@@ -550,21 +569,30 @@ def build_greeting_video(face_img_path: str, out_path: str):
         cmd = [_ffmpeg, "-y", "-loglevel", "error"]
         for c in clips:
             cmd += ["-stream_loop", "-1", "-t", "2", "-i", c]
-        fc = (
-            "".join(f"[{i}:v]" for i in range(6))
-            + f"xstack=inputs=6:layout=0_0|w0_0|w0+w1_0|0_h0|w0_h0|w0+w1_h0:fill=black[out]"
-        )
-        cmd += [
-            "-filter_complex", fc, "-map", "[out]",
-            "-r", "25", "-c:v", "libx264", "-crf", "23", "-preset", "veryfast",
-            "-pix_fmt", "yuv420p", "-movflags", "+faststart", "-t", "2", out_path,
-        ]
-        res = subprocess.run(cmd, capture_output=True)
-        if res.returncode != 0:
-            err = (res.stderr or b"").decode("utf-8", "ignore")[-300:]
-            raise RuntimeError(f"ffmpeg сборки коллажа({res.returncode}): {err}")
+        base = "".join(f"[{i}:v]fps=10,setpts=PTS-STARTPTS[s{i}];" for i in range(6))
+        grid = "[s0][s1][s2][s3][s4][s5]xstack=inputs=6:layout=0_0|w0_0|w0+w1_0|0_h0|w0_h0|w0+w1_h0:fill=black[grid]"
+        variants = ((128, "768:512"), (96, "640:427"), (64, "544:363"))
+        last_err = b""
+        for colors, size in variants:
+            fc = (
+                base + grid
+                + f";[grid]split=2[g1][g2];[g1]palettegen=max_colors={colors}[pal]"
+                + f";[g2]scale={size}[gs];[gs][pal]paletteuse=dither=sierra2_4a[out]"
+            )
+            cmd = [
+                _ffmpeg, "-y", "-loglevel", "error",
+                *(a for c in clips for a in ("-stream_loop", "-1", "-t", "2", "-i", c)),
+                "-filter_complex", fc, "-map", "[out]",
+                "-loop", "0", "-an", out_path,
+            ]
+            res = subprocess.run(cmd, capture_output=True)
+            if res.returncode != 0:
+                last_err = (res.stderr or b"")[-400:]
+                continue
+            if 0 < os.path.getsize(out_path) < 9.5 * 1024 * 1024:
+                return out_path
         if not os.path.exists(out_path) or os.path.getsize(out_path) == 0:
-            raise RuntimeError("Пустой коллаж")
+            raise RuntimeError(f"GIF коллажа не собрался: {last_err!r}")
         return out_path
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

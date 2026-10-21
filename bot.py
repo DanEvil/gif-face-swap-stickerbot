@@ -283,24 +283,24 @@ def _greeting_image_bytes() -> bytes | None:
 
 
 _GREET_FACE = os.path.join(config.CACHE_DIR, "greeting_face.jpg")
-_GREET_MP4 = os.path.join(config.CACHE_DIR, "greeting_collage.mp4")
+_GREET_GIF = os.path.join(config.CACHE_DIR, "greeting_collage.gif")
 _greet_building = False
 
 
 def _greeting_ready() -> str | None:
-    if not os.path.isfile(_GREET_MP4):
+    if not os.path.isfile(_GREET_GIF):
         return None
-    if os.path.isfile(_GREET_FACE) and os.path.getmtime(_GREET_MP4) < os.path.getmtime(_GREET_FACE):
+    if os.path.isfile(_GREET_FACE) and os.path.getmtime(_GREET_GIF) < os.path.getmtime(_GREET_FACE):
         return None
-    return _GREET_MP4
+    return _GREET_GIF
 
 
 def _greeting_needs_build() -> bool:
     if not os.path.isfile(_GREET_FACE):
         return False
-    if not os.path.isfile(_GREET_MP4):
+    if not os.path.isfile(_GREET_GIF):
         return True
-    mt = os.path.getmtime(_GREET_MP4)
+    mt = os.path.getmtime(_GREET_GIF)
     if mt < os.path.getmtime(_GREET_FACE):
         return True
     if mt < greeting_sources_mtime():
@@ -311,13 +311,13 @@ def _greeting_needs_build() -> bool:
 def _build_greeting_blocking():
     if not os.path.isfile(_GREET_FACE):
         return None
-    tmp = _GREET_MP4 + ".part.mp4"
+    tmp = _GREET_GIF + ".part.gif"
     out = build_greeting_video(_GREET_FACE, tmp)
     if not out:
         return None
-    os.makedirs(os.path.dirname(_GREET_MP4), exist_ok=True)
-    os.replace(tmp, _GREET_MP4)
-    return _GREET_MP4
+    os.makedirs(os.path.dirname(_GREET_GIF), exist_ok=True)
+    os.replace(tmp, _GREET_GIF)
+    return _GREET_GIF
 
 
 async def _greeting_worker(bot: Bot | None = None, chat_id: int | None = None):

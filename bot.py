@@ -44,7 +44,7 @@ CHECK = {"ok": "\N{LARGE GREEN CIRCLE}", "fail": "\N{LARGE RED CIRCLE}"}
 BTN_OURS = "\N{PERFORMING ARTS} Наши стикеры"
 BTN_OWN = "\N{GRINNING FACE} Свои стикеры"
 BTN_STATS = "\N{BAR CHART} Статистика"
-BTN_RESTART = "\N{ANTICLOCKWISE DOWNWARDS AND UPWARDS OPEN CIRCLE ARROWS} Заново"
+BTN_MAIN = "\N{HOUSE BUILDING} Главное меню"
 BTN_RANDOM_PACK = "\N{GAME DIE} Случайный пак"
 
 
@@ -59,7 +59,7 @@ def menu_kb() -> ReplyKeyboardMarkup:
         resize_keyboard=True,
         keyboard=[
             [KeyboardButton(text=BTN_OURS), KeyboardButton(text=BTN_OWN)],
-            [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_RESTART)],
+            [KeyboardButton(text=BTN_STATS)],
         ],
     )
 
@@ -75,7 +75,7 @@ def packs_kb(pack_names: list[str]) -> ReplyKeyboardMarkup:
             row = []
     if row:
         rows.append(row)
-    rows.append([KeyboardButton(text=BTN_RESTART)])
+    rows.append([KeyboardButton(text=BTN_MAIN)])
     return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=rows)
 
 
@@ -219,6 +219,11 @@ async def checks_or_gate(message: Message, state: FSMContext, bot: Bot) -> bool:
         disable_web_page_preview=True,
     )
     return False
+
+
+@router.message(F.text == BTN_MAIN)
+async def btn_main(message: Message, state: FSMContext, bot: Bot):
+    await cmd_start(message, state, bot)
 
 
 @router.message(CommandStart())
@@ -468,11 +473,6 @@ async def btn_ours(message: Message, state: FSMContext, bot: Bot):
 @router.message(F.text == BTN_OWN)
 async def btn_own(message: Message, state: FSMContext, bot: Bot):
     await on_own(message, state, bot)
-
-
-@router.message(F.text == BTN_RESTART)
-async def btn_restart(message: Message, state: FSMContext, bot: Bot):
-    await cmd_start(message, state, bot)
 
 
 @router.message(F.text == BTN_STATS)

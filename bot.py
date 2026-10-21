@@ -914,11 +914,11 @@ async def main():
     me = await bot.get_me()
     print(f"Бот запущен: @{me.username}"
           + (f" через прокси" if config.TELEGRAM_PROXY else ""))
-    if os.path.isfile(GREET_FACE):
-        if _greeting_needs_build():
-            asyncio.create_task(_greeting_worker())
-    else:
+    if not os.path.isfile(_GREET_FACE):
         print("[greeting] Для коллажа приветствия нет файла cache/greeting_face.jpg")
+    elif _greeting_needs_build():
+        print("[greeting] Начинаю сборку коллажа приветствия")
+        asyncio.create_task(_greeting_worker())
     try:
         await dp.start_polling(bot, handle_signals=True)
     finally:

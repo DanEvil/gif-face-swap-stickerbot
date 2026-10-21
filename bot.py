@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import math
 import os
 import random
@@ -133,7 +133,7 @@ async def _transition(message: Message, sender, *args, **kwargs):
 CHECK = {"ok": "\N{LARGE GREEN CIRCLE}", "fail": "\N{LARGE RED CIRCLE}"}
 
 BTN_OURS = "\N{PERFORMING ARTS} Наши стикеры"
-BTN_OWN = "\N{GRINNING FACE} Свои стикеры"
+BTN_OWN = "\N{GRINNING FACE} Мои стикеры"
 BTN_STATS = "\N{BAR CHART} Статистика"
 BTN_MAIN = "\N{HOUSE BUILDING} Главное меню"
 BTN_RANDOM_PACK = "\N{GAME DIE} Случайный пак"
@@ -208,7 +208,7 @@ def menu_text() -> str:
         f"\N{GRINNING FACE WITH SMILING EYES} Привет!\n\n"
         "Я создам тебе персональный стикерпак по фильмам и сериалам.\n\n"
         f"\N{PERFORMING ARTS} <Наши стикеры> — выберу тематический пак из библиотеки\n"
-        f"\N{GRINNING FACE} <Свои стикеры> — пришли стикер из своего пака, и я возьму его за основу\n\n"
+        f"\N{GRINNING FACE} <Мои стикеры> — пришли стикер из своего пака, и я возьму его за основу\n\n"
         "Для любого варианта потом пришли фото лица "
         "(\N{BUST IN SILHOUETTE} анфас, крупно, хорошее освещение)."
     )
@@ -219,7 +219,7 @@ def greeting_caption() -> str:
         "<b>Что умеет этот бот?</b>\n\n"
         "Привет! Я создам тебе персональный стикерпак по фильмам и сериалам.\n\n"
         f"\N{PERFORMING ARTS} «Наши стикеры» — тематические паки из библиотеки\n"
-        f"\N{GRINNING FACE} «Свои стикеры» — пришли стикер из своего пака, и я возьму его за основу\n\n"
+        f"\N{GRINNING FACE} «Мои стикеры» — пришли стикер из своего пака, и я возьму его за основу\n\n"
         "Для любого варианта потом пришли фото лица "
         "(\N{BUST IN SILHOUETTE} анфас, крупно, хорошее освещение).\n\n"
         "Нажми «Начать» и выбирай!"

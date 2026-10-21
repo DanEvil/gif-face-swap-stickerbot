@@ -1,4 +1,5 @@
 ﻿import asyncio
+import hashlib
 import math
 import os
 import random
@@ -584,24 +585,59 @@ async def cb_pack_noop(call: CallbackQuery):
     await call.answer()
 
 
-def _preview_frames(srcs: list[str], count: int = 3) -> list[bytes]:
+_PREVIEW_DIR = os.path.join(config.CACHE_DIR, "previews")
+
+
+def _preview_frame_jpg(src: str) -> bytes:
     import cv2
 
-    out = []
-    for src in srcs[:count]:
-        cap = cv2.VideoCapture(src)
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, total // 2))
-        ok, frame = cap.read()
-        cap.release()
-        if not ok:
-            continue
-        if frame.shape[:2] != (512, 512):
-            frame = cv2.resize(frame, (512, 512))
-        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        if ok:
-            out.append(buf.tobytes())
+    st = os.stat(src)
+    h = hashlib.sha1()
+    h.update(os.path.abspath(src).encode("utf-8", "ignore"))
+    h.update(str(int(st.st_mtime)).encode())
+    h.update(str(st.st_size).encode())
+    path = os.path.join(_PREVIEW_DIR, h.hexdigest() + ".jpg")
+    if os.path.isfile(path):
+        with open(path, "rb") as f:
+            return f.read()
+    cap = cv2.VideoCapture(src)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, total // 2))
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        return b""
+    if frame.shape[:2] != (512, 512):
+        frame = cv2.resize(frame, (512, 512))
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if not ok:
+        return b""
+    data = buf.tobytes()
+    try:
+        os.makedirs(_PREVIEW_DIR, exist_ok=True)
+        tmp = path + ".part"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+    return data
+
+
+def _preview_frames(srcs: list[str], count: int = 3) -> list[bytes]:
+    out = [b for b in (_preview_frame_jpg(s) for s in srcs[:count]) if b]
     return out
+
+
+async def _warm_sources(srcs: list[str]):
+    from faceswap import warm_face_cache
+
+    loop = asyncio.get_running_loop()
+    for src in srcs:
+        try:
+            await loop.run_in_executor(None, warm_face_cache, src)
+        except Exception:
+            pass
 
 
 async def _tmp_answer(message: Message, text: str, **kw) -> Message:
@@ -639,6 +675,7 @@ async def start_ours_pack(message: Message, state: FSMContext, pack_name: str):
         "Вот примеры исходников:",
     )
     await send_pack_preview(message.bot, message.chat.id, srcs)
+    asyncio.create_task(_warm_sources(srcs))
     await _tmp_answer(
         message,
         "Теперь пришли фото лица (\N{BUST IN SILHOUETTE} анфас, крупно, хорошее освещение).",

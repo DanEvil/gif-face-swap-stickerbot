@@ -427,6 +427,14 @@ def _finalize_webm(proc, webm_path: str) -> str:
             os.remove(tmp)
 
 
+def warm_face_cache(path: str):
+    try:
+        frames, _ = _read_media(path)
+        _faces_for_frames(path, frames)
+    except Exception:
+        pass
+
+
 class GenerationCancelled(RuntimeError):
     pass
 

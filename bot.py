@@ -138,6 +138,7 @@ CHECK = {"ok": "\N{LARGE GREEN CIRCLE}", "fail": "\N{LARGE RED CIRCLE}"}
 
 BTN_OURS = "\N{PERFORMING ARTS} Наши стикеры"
 BTN_OWN = "\N{GRINNING FACE} Мои стикеры"
+BTN_PACKS = "\N{PACKAGE} Мои стикерпаки"
 BTN_STATS = "\N{BAR CHART} Статистика"
 BTN_MAIN = "\N{HOUSE BUILDING} Главное меню"
 BTN_RANDOM_PACK = "\N{GAME DIE} Случайный пак"
@@ -149,14 +150,14 @@ class Flow(StatesGroup):
     waiting_photo = State()
 
 
-def menu_kb() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        resize_keyboard=True,
-        keyboard=[
-            [KeyboardButton(text=BTN_OURS), KeyboardButton(text=BTN_OWN)],
-            [KeyboardButton(text=BTN_STATS)],
-        ],
-    )
+def menu_kb(user_id: int | None = None) -> ReplyKeyboardMarkup:
+    rows: list[list[KeyboardButton]] = [
+        [KeyboardButton(text=BTN_OURS), KeyboardButton(text=BTN_OWN)],
+    ]
+    if user_id is not None and db.has_packs(user_id):
+        rows.append([KeyboardButton(text=BTN_PACKS)])
+    rows.append([KeyboardButton(text=BTN_STATS)])
+    return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=rows)
 
 
 def packs_kb(pack_names: list[str]) -> ReplyKeyboardMarkup:
@@ -345,13 +346,14 @@ async def _greeting_worker(bot: Bot | None = None, chat_id: int | None = None):
 
 
 async def send_greeting(message: Message):
+    uid = message.from_user.id if message.from_user else None
     mp4 = _greeting_ready()
     if mp4:
         try:
             sent = await message.answer_animation(
                 FSInputFile(mp4),
                 caption=greeting_caption(),
-                reply_markup=menu_kb(),
+                reply_markup=menu_kb(uid),
                 parse_mode="HTML",
             )
             _track_tmp(message.chat.id, sent.message_id)
@@ -369,7 +371,7 @@ async def send_greeting(message: Message):
             sent = await message.answer_photo(
                 BufferedInputFile(img, filename="start.jpg"),
                 caption=greeting_caption(),
-                reply_markup=menu_kb(),
+                reply_markup=menu_kb(uid),
                 parse_mode="HTML",
             )
             _track_tmp(message.chat.id, sent.message_id)
@@ -377,7 +379,7 @@ async def send_greeting(message: Message):
             return
         except Exception:
             pass
-    sent = await message.answer(menu_text(), reply_markup=menu_kb(), disable_web_page_preview=True)
+    sent = await message.answer(menu_text(), reply_markup=menu_kb(uid), disable_web_page_preview=True)
     _track_tmp(message.chat.id, sent.message_id)
     _mark_kb(message.chat.id, sent.message_id)
 
@@ -414,6 +416,70 @@ async def btn_ours(message: Message, state: FSMContext, bot: Bot):
 async def btn_own(message: Message, state: FSMContext, bot: Bot):
     await _drop_user_msg(message)
     await _transition(message, lambda: on_own(message, state, bot))
+
+
+def my_packs_kb(urls: list[str], page: int) -> InlineKeyboardMarkup:
+    per = 4
+    total = max(1, math.ceil(len(urls) / per))
+    page = max(0, min(page, total - 1))
+    rows: list[list[InlineKeyboardButton]] = []
+    for i in range(page * per, min((page + 1) * per, len(urls))):
+        rows.append([InlineKeyboardButton(
+            text=f"\N{LINK SYMBOL} Стикерпак {i + 1}",
+            url=urls[i],
+        )])
+    nav: list[InlineKeyboardButton] = []
+    if total > 1:
+        if page > 0:
+            nav.append(InlineKeyboardButton(text="⬅️", callback_data=f"mypage:{page - 1}"))
+        nav.append(InlineKeyboardButton(text=f"{page + 1}/{total}", callback_data="mypagenoop"))
+        if page < total - 1:
+            nav.append(InlineKeyboardButton(text="➡️", callback_data=f"mypage:{page + 1}"))
+        rows.append(nav)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def show_my_packs(message: Message, state: FSMContext, bot: Bot):
+    if not await checks_or_gate(message, state, bot):
+        return
+    uid = message.from_user.id if message.from_user else 0
+    urls = db.user_packs(uid)
+    if not urls:
+        await state.set_state(None)
+        sent = await _tmp_answer(
+            message,
+            "\N{PACKAGE} У тебя пока нет созданных стикерпаков.\n"
+            "Сгенерируй первый — кнопка появится здесь.",
+            reply_markup=menu_kb(uid),
+        )
+        _mark_kb(message.chat.id, sent.message_id)
+        return
+    await state.update_data(my_page=0)
+    sent = await _tmp_answer(
+        message,
+        f"\N{PACKAGE} Твои стикерпаки ({len(urls)}) — открывай по кнопкам:",
+        reply_markup=my_packs_kb(urls, 0),
+    )
+    _track_tmp(message.chat.id, sent.message_id)
+
+
+@router.message(F.text == BTN_PACKS)
+async def btn_my_packs(message: Message, state: FSMContext, bot: Bot):
+    await _drop_user_msg(message)
+    await _transition(message, lambda: show_my_packs(message, state, bot))
+
+
+@router.callback_query(F.data.startswith("mypage:"))
+async def cb_my_page(call: CallbackQuery, state: FSMContext):
+    page = int(call.data.split(":", 1)[1])
+    uid = call.from_user.id
+    urls = db.user_packs(uid)
+    await state.update_data(my_page=page)
+    try:
+        await call.message.edit_reply_markup(reply_markup=my_packs_kb(urls, page))
+    except Exception:
+        pass
+    await call.answer()
 
 
 @router.message(F.text == BTN_STATS)
@@ -585,6 +651,11 @@ async def cb_pack_noop(call: CallbackQuery):
     await call.answer()
 
 
+@router.callback_query(F.data == "mypagenoop")
+async def cb_my_page_noop(call: CallbackQuery):
+    await call.answer()
+
+
 _PREVIEW_DIR = os.path.join(config.CACHE_DIR, "previews")
 
 
@@ -690,7 +761,7 @@ async def on_own(message: Message, state: FSMContext, bot: Bot):
         message,
         "\N{INCOMING ENVELOPE} Пришли любой стикер из своего стикерпака "
         "(лучше видео-стикер).",
-        reply_markup=menu_kb(),
+        reply_markup=menu_kb(message.from_user.id),
     )
     _mark_kb(message.chat.id, sent.message_id)
 
@@ -762,7 +833,7 @@ async def on_own_sticker(message: Message, state: FSMContext, bot: Bot):
         message,
         f"\N{FILM FRAMES} Взял твой набор «{title}» ({len(srcs)} стикеров).\n\n"
         "Теперь пришли фото лица (\N{BUST IN SILHOUETTE} анфас, крупно, хорошее освещение).",
-        reply_markup=menu_kb(),
+        reply_markup=menu_kb(message.from_user.id),
     )
     _mark_kb(message.chat.id, sent.message_id)
 
@@ -875,7 +946,7 @@ async def cmd_stats(message: Message, bot: Bot):
         f"\N{BUST IN SILHOUETTE} Запустили бота: {s['users']}\n"
         f"\N{WHITE HEAVY CHECK MARK} Прошли гейт: {s['gated']}\n"
         f"\N{PAGE FACING UP} Стикерпаков создано: {s['packs']}",
-        reply_markup=menu_kb(),
+        reply_markup=menu_kb(message.from_user.id),
     )
     _mark_kb(message.chat.id, sent.message_id)
 

@@ -21,8 +21,36 @@ def _get_conn() -> sqlite3.Connection:
             "packs INTEGER NOT NULL DEFAULT 0,"
             "last_pack TEXT)"
         )
+        _conn.execute(
+            "CREATE TABLE IF NOT EXISTS user_packs ("
+            "user_id INTEGER NOT NULL,"
+            "url TEXT NOT NULL,"
+            "created_at REAL NOT NULL DEFAULT 0,"
+            "PRIMARY KEY (user_id, url))"
+        )
+        _conn.execute(
+            "INSERT OR IGNORE INTO user_packs (user_id, url, created_at) "
+            "SELECT user_id, last_pack, 0 FROM users "
+            "WHERE last_pack IS NOT NULL AND last_pack != ''"
+        )
         _conn.commit()
     return _conn
+
+
+def user_packs(user_id: int) -> list[str]:
+    rows = _get_conn().execute(
+        "SELECT url FROM user_packs WHERE user_id = ? "
+        "ORDER BY created_at ASC, url ASC",
+        (user_id,),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def has_packs(user_id: int) -> bool:
+    row = _get_conn().execute(
+        "SELECT 1 FROM user_packs WHERE user_id = ? LIMIT 1", (user_id,)
+    ).fetchone()
+    return bool(row)
 
 
 def get_user(user_id: int) -> dict | None:
@@ -64,6 +92,10 @@ def mark_pack_created(user_id: int, pack_url: str) -> None:
         "ON CONFLICT(user_id) DO UPDATE SET "
         "packs = users.packs + 1, last_pack = excluded.last_pack",
         (user_id, pack_url),
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO user_packs (user_id, url, created_at) VALUES (?, ?, ?)",
+        (user_id, pack_url, time.time()),
     )
     conn.commit()
 

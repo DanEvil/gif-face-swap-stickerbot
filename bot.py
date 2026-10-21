@@ -39,6 +39,35 @@ router.message.filter(F.chat.type == ChatType.PRIVATE)
 _job_sem: asyncio.Semaphore = asyncio.Semaphore(config.JOBS_CONCURRENCY)
 _job_waiting = 0
 
+_tmp_msgs: dict[int, set[int]] = {}
+_result_msgs: dict[int, list[int]] = {}
+
+
+def _track_tmp(chat_id: int, mid: int | None):
+    if mid:
+        _tmp_msgs.setdefault(chat_id, set()).add(mid)
+
+
+async def _purge_history(chat_id: int, bot: Bot):
+    for mid in _tmp_msgs.pop(chat_id, set()):
+        try:
+            await bot.delete_message(chat_id, mid)
+        except Exception:
+            pass
+
+
+async def _add_result(chat_id: int, mid: int | None, bot: Bot):
+    if not mid:
+        return
+    ids = _result_msgs.setdefault(chat_id, [])
+    ids.append(mid)
+    while len(ids) > 2:
+        old = ids.pop(0)
+        try:
+            await bot.delete_message(chat_id, old)
+        except Exception:
+            pass
+
 CHECK = {"ok": "\N{LARGE GREEN CIRCLE}", "fail": "\N{LARGE RED CIRCLE}"}
 
 BTN_OURS = "\N{PERFORMING ARTS} Наши стикеры"
@@ -195,16 +224,18 @@ async def send_greeting(message: Message):
         try:
             from aiogram.types import BufferedInputFile
 
-            await message.answer_photo(
+            sent = await message.answer_photo(
                 BufferedInputFile(img, filename="start.jpg"),
                 caption=greeting_caption(),
                 reply_markup=menu_kb(),
                 parse_mode="HTML",
             )
+            _track_tmp(message.chat.id, sent.message_id)
             return
         except Exception:
             pass
-    await message.answer(menu_text(), reply_markup=menu_kb(), disable_web_page_preview=True)
+    sent = await message.answer(menu_text(), reply_markup=menu_kb(), disable_web_page_preview=True)
+    _track_tmp(message.chat.id, sent.message_id)
 
 
 async def checks_or_gate(message: Message, state: FSMContext, bot: Bot) -> bool:
@@ -213,45 +244,53 @@ async def checks_or_gate(message: Message, state: FSMContext, bot: Bot) -> bool:
         db.remember(message.from_user.id, message.from_user.first_name)
         return True
     await state.clear()
-    await message.answer(
+    sent = await message.answer(
         f"\N{GRINNING FACE WITH SMILING EYES} Сначала выполни условия:\n\n" + checks_text(ch),
         reply_markup=gate_keyboard(),
         disable_web_page_preview=True,
     )
+    _track_tmp(message.chat.id, sent.message_id)
     return False
 
 
 @router.message(F.text == BTN_MAIN)
 async def btn_main(message: Message, state: FSMContext, bot: Bot):
+    await _purge_history(message.chat.id, bot)
     await cmd_start(message, state, bot)
 
 
 @router.message(F.text == BTN_OURS)
 async def btn_ours(message: Message, state: FSMContext, bot: Bot):
+    await _purge_history(message.chat.id, bot)
     await on_ours(message, state, bot)
 
 
 @router.message(F.text == BTN_OWN)
 async def btn_own(message: Message, state: FSMContext, bot: Bot):
+    await _purge_history(message.chat.id, bot)
     await on_own(message, state, bot)
 
 
 @router.message(F.text == BTN_STATS)
 async def btn_stats(message: Message, bot: Bot):
+    await _purge_history(message.chat.id, bot)
     await cmd_stats(message, bot)
 
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext, bot: Bot):
+    await _purge_history(message.chat.id, bot)
     await state.clear()
     db.started(message.from_user.id)
     if not ffmpeg_available():
-        await message.answer("\N{WARNING SIGN} ffmpeg не найден, генерация недоступна")
+        sent = await message.answer("\N{WARNING SIGN} ffmpeg не найден, генерация недоступна")
+        _track_tmp(message.chat.id, sent.message_id)
         return
     if not list_packs():
-        await message.answer(
+        sent = await message.answer(
             f"\N{WARNING SIGN} Библиотека стикеров пуста: папка {config.STICKER_SRC_DIR}"
         )
+        _track_tmp(message.chat.id, sent.message_id)
         return
     if not await checks_or_gate(message, state, bot):
         return
@@ -278,14 +317,16 @@ async def on_ours(message: Message, state: FSMContext, bot: Bot):
         return
     pack_names = list_packs()
     if not pack_names:
-        await message.answer(f"\N{WARNING SIGN} Библиотека пуста: {config.STICKER_SRC_DIR}")
+        sent = await message.answer(f"\N{WARNING SIGN} Библиотека пуста: {config.STICKER_SRC_DIR}")
+        _track_tmp(message.chat.id, sent.message_id)
         return
     await state.set_state(Flow.choose_pack)
     await state.update_data(pack_names=pack_names)
-    await message.answer(
+    sent = await message.answer(
         "\N{CLAPPER BOARD} Выбери пак из библиотеки — или жми «Случайный пак» (первая кнопка):",
         reply_markup=packs_kb(pack_names[:30]),
     )
+    _track_tmp(message.chat.id, sent.message_id)
 
 
 @router.message(Flow.choose_pack, F.text == BTN_RANDOM_PACK)
@@ -304,7 +345,8 @@ async def on_pick_pack(message: Message, state: FSMContext):
         if name.removesuffix(".webm").replace("_", " ").lower() == wanted:
             await start_ours_pack(message, state, name)
             return
-    await message.answer("\N{NO ENTRY SIGN} Не понял выбор — нажми кнопку с названием пака")
+    sent = await message.answer("\N{NO ENTRY SIGN} Не понял выбор — нажми кнопку с названием пака")
+    _track_tmp(message.chat.id, sent.message_id)
 
 
 def _preview_frames(srcs: list[str], count: int = 3) -> list[bytes]:
@@ -327,6 +369,12 @@ def _preview_frames(srcs: list[str], count: int = 3) -> list[bytes]:
     return out
 
 
+async def _tmp_answer(message: Message, text: str, **kw) -> Message:
+    sent = await message.answer(text, **kw)
+    _track_tmp(message.chat.id, sent.message_id)
+    return sent
+
+
 async def send_pack_preview(bot: Bot, chat_id: int, srcs: list[str]):
     frames = await asyncio.get_running_loop().run_in_executor(None, _preview_frames, srcs)
     if not frames:
@@ -335,7 +383,9 @@ async def send_pack_preview(bot: Bot, chat_id: int, srcs: list[str]):
 
     media = [InputMediaPhoto(media=BufferedInputFile(b, filename=f"preview{i}.jpg")) for i, b in enumerate(frames)]
     try:
-        await bot.send_media_group(chat_id, media=media)
+        msgs = await bot.send_media_group(chat_id, media=media)
+        for m in msgs:
+            _track_tmp(chat_id, m.message_id)
     except Exception:
         pass
 
@@ -343,18 +393,20 @@ async def send_pack_preview(bot: Bot, chat_id: int, srcs: list[str]):
 async def start_ours_pack(message: Message, state: FSMContext, pack_name: str):
     srcs = pick_pack_files(pack_name, config.MAX_STICKERS)
     if not srcs:
-        await message.answer("\N{NO ENTRY SIGN} В этом паке нет стикеров — выбери другой")
+        await _tmp_answer(message, "\N{NO ENTRY SIGN} В этом паке нет стикеров — выбери другой")
         return
     await state.update_data(srcs=srcs, pack=pack_name)
     await state.set_state(Flow.waiting_photo)
     title = pack_name.removesuffix(".webm").replace("_", " ")
-    await message.answer(
+    await _tmp_answer(
+        message,
         f"\N{FILM FRAMES} Пак «{title}» — {len(srcs)} стикеров.\n"
-        "Вот примеры исходников:"
+        "Вот примеры исходников:",
     )
     await send_pack_preview(message.bot, message.chat.id, srcs)
-    await message.answer(
-        "Теперь пришли фото лица (\N{BUST IN SILHOUETTE} анфас, крупно, хорошее освещение)."
+    await _tmp_answer(
+        message,
+        "Теперь пришли фото лица (\N{BUST IN SILHOUETTE} анфас, крупно, хорошее освещение).",
     )
 
 
@@ -362,9 +414,10 @@ async def on_own(message: Message, state: FSMContext, bot: Bot):
     if not await checks_or_gate(message, state, bot):
         return
     await state.set_state(Flow.waiting_own_sticker)
-    await message.answer(
+    await _tmp_answer(
+        message,
         "\N{INCOMING ENVELOPE} Пришли любой стикер из своего стикерпака "
-        "(лучше видео-стикер)."
+        "(лучше видео-стикер).",
     )
 
 
@@ -372,20 +425,20 @@ async def on_own(message: Message, state: FSMContext, bot: Bot):
 async def on_own_sticker(message: Message, state: FSMContext, bot: Bot):
     sticker = message.sticker
     if sticker.is_animated:
-        await message.answer("\N{NO ENTRY SIGN} Анимированные (TGS) стикеры не поддерживаются. Пришли видео-стикер")
+        await _tmp_answer(message, "\N{NO ENTRY SIGN} Анимированные (TGS) стикеры не поддерживаются. Пришли видео-стикер")
         return
     if not sticker.set_name:
-        await message.answer("\N{NO ENTRY SIGN} Это одиночный стикер, а не из набора. Пришли стикер из своего пака")
+        await _tmp_answer(message, "\N{NO ENTRY SIGN} Это одиночный стикер, а не из набора. Пришли стикер из своего пака")
         return
     try:
         st_set = await bot.get_sticker_set(sticker.set_name)
     except TelegramBadRequest:
-        await message.answer("\N{NO ENTRY SIGN} Не удалось получить набор. Пришли стикер из своего пака")
+        await _tmp_answer(message, "\N{NO ENTRY SIGN} Не удалось получить набор. Пришли стикер из своего пака")
         return
     stickers = list(st_set.stickers)
     usable = [s for s in stickers if not s.is_animated]
     if not usable:
-        await message.answer("\N{NO ENTRY SIGN} В наборе нет подходящих стикеров")
+        await _tmp_answer(message, "\N{NO ENTRY SIGN} В наборе нет подходящих стикеров")
         return
     if len(usable) > config.MAX_STICKERS:
         usable = random.sample(usable, config.MAX_STICKERS)
@@ -401,15 +454,16 @@ async def on_own_sticker(message: Message, state: FSMContext, bot: Bot):
     title = (st_set.title or sticker.set_name)[:48]
     await state.update_data(srcs=srcs, pack=title)
     await state.set_state(Flow.waiting_photo)
-    await message.answer(
+    await _tmp_answer(
+        message,
         f"\N{FILM FRAMES} Взял твой набор «{title}» ({len(srcs)} стикеров).\n\n"
-        "Теперь пришли фото лица (\N{BUST IN SILHOUETTE} анфас, крупно, хорошее освещение)."
+        "Теперь пришли фото лица (\N{BUST IN SILHOUETTE} анфас, крупно, хорошее освещение).",
     )
 
 
 @router.message(Flow.waiting_own_sticker)
 async def on_own_other(message: Message):
-    await message.answer("\N{INCOMING ENVELOPE} Жду стикер из твоего пака — отправь его стикером, не файлом")
+    await _tmp_answer(message, "\N{INCOMING ENVELOPE} Жду стикер из твоего пака — отправь его стикером, не файлом")
 
 
 def photo_path(message: Message) -> tuple | None:
@@ -436,17 +490,18 @@ def photo_path(message: Message) -> tuple | None:
 async def on_image(message: Message, state: FSMContext, bot: Bot):
     data = await state.get_data()
     if data.get("busy"):
-        await message.answer("\N{HOURGLASS WITH FLOWING SAND} Уже работаю над твоим набором")
+        await _tmp_answer(message, "\N{HOURGLASS WITH FLOWING SAND} Уже работаю над твоим набором")
         return
     got = photo_path(message)
     if got is None:
-        await message.answer("\N{NO ENTRY SIGN} Это не фото. Пришли снимок лица")
+        await _tmp_answer(message, "\N{NO ENTRY SIGN} Это не фото. Пришли снимок лица")
         return
     if not data.get("srcs"):
         await state.clear()
-        await message.answer(
+        await _tmp_answer(
+            message,
             "\N{NO ENTRY SIGN} Не знаю, на какие стикеры менять лицо. "
-            "Начни заново кнопкой «Заново»."
+            "Начни с «\N{HOUSE BUILDING} Главное меню».",
         )
         return
     file, ext = got
@@ -475,22 +530,24 @@ async def run_job(message: Message, bot: Bot, file, ext: str, srcs: list[str], s
 
 @router.message(Flow.waiting_photo)
 async def on_other(message: Message):
-    await message.answer(
-        "\N{BUST IN SILHOUETTE} Пришли фото лица — обычное фото снимком, без текста."
+    await _tmp_answer(
+        message,
+        "\N{BUST IN SILHOUETTE} Пришли фото лица — обычное фото снимком, без текста.",
     )
 
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message, bot: Bot):
     if not subs.is_admin(message.from_user.id):
-        await message.answer("\N{LOCK} Доступно только администраторам")
+        await _tmp_answer(message, "\N{LOCK} Доступно только администраторам")
         return
     s = db.stats()
-    await message.answer(
+    await _tmp_answer(
+        message,
         f"\N{CHART WITH UPWARDS TREND} Статистика\n\n"
         f"\N{BUST IN SILHOUETTE} Запустили бота: {s['users']}\n"
         f"\N{WHITE HEAVY CHECK MARK} Прошли гейт: {s['gated']}\n"
-        f"\N{PAGE FACING UP} Стикерпаков создано: {s['packs']}"
+        f"\N{PAGE FACING UP} Стикерпаков создано: {s['packs']}",
     )
 
 
@@ -506,24 +563,25 @@ async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], q
     try:
         await bot.download(file, destination=path)
     except Exception:
-        await message.answer("\N{CROSS MARK} Не удалось скачать фото")
+        await _tmp_answer(message, "\N{CROSS MARK} Не удалось скачать фото")
         return
     loop = asyncio.get_running_loop()
     try:
         source_face = await loop.run_in_executor(None, extract_source_face, path)
     except Exception as e:
-        await message.answer(f"\N{CROSS MARK} Ошибка: {e}")
+        await _tmp_answer(message, f"\N{CROSS MARK} Ошибка: {e}")
         return
     if source_face is None:
-        await message.answer(
+        await _tmp_answer(
+            message,
             "\N{FACE WITHOUT MOUTH} Не нашёл лицо на фото. "
-            "Пришли фото с одним лицом в анфас и хорошим светом."
+            "Пришли фото с одним лицом в анфас и хорошим светом.",
         )
         return
     os.remove(path)
     if queue_position:
-        await message.answer(f"\N{HOURGLASS} Ты {queue_position}-й в очереди — жди результатов")
-    status = await message.answer("\N{FERRIS WHEEL} Генерирую... Это займёт несколько минут")
+        await _tmp_answer(message, f"\N{HOURGLASS} Ты {queue_position}-й в очереди — жди результатов")
+    status = await _tmp_answer(message, "\N{FERRIS WHEEL} Генерирую... Это займёт несколько минут")
 
     async def progress(done: int, total: int):
         try:
@@ -552,15 +610,17 @@ async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], q
     ]])
     try:
         sample = random.choice(webms)
-        await message.answer_sticker(FSInputFile(sample))
+        sticker_msg = await message.answer_sticker(FSInputFile(sample))
+        await _add_result(message.chat.id, sticker_msg.message_id, bot)
     except Exception:
         pass
-    await message.answer(
+    link_msg = await message.answer(
         f"\N{GRINNING FACE WITH SMILING EYES} Готово!\n{link}\n\n"
         "\N{SLIGHTLY SMILING FACE} Если стикеры не применились сразу — закрой и открой Telegram.",
         reply_markup=kb,
         disable_web_page_preview=True,
     )
+    await _add_result(message.chat.id, link_msg.message_id, bot)
 
 
 @router.message()

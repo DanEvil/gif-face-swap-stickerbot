@@ -681,13 +681,43 @@ async def on_own_sticker(message: Message, state: FSMContext, bot: Bot):
         usable = random.sample(usable, config.MAX_STICKERS)
     srcs_dir = os.path.join(config.CACHE_DIR, f"own{message.from_user.id}")
     os.makedirs(srcs_dir, exist_ok=True)
-    srcs = []
-    for i, s in enumerate(usable):
+    status = await _tmp_answer(
+        message,
+        f"\N{INBOX TRAY} Забираю набор «{(st_set.title or sticker.set_name)[:40]}» ({len(usable)} шт)…",
+    )
+    done = 0
+    total = len(usable)
+    sem = asyncio.Semaphore(8)
+
+    async def _grab(i: int, s):
+        nonlocal done
         f = await bot.get_file(s.file_id)
         ext = os.path.splitext(f.file_path or "")[1] or (".webm" if s.is_video else ".webp")
         dst = os.path.join(srcs_dir, f"s{i}{ext}")
         await bot.download(f, destination=dst)
-        srcs.append(dst)
+        done += 1
+        if done == total or (done % 10 == 0):
+            try:
+                await status.edit_text(
+                    f"\N{INBOX TRAY} Забираю набор… {done}/{total}",
+                )
+            except TelegramBadRequest:
+                pass
+        return dst
+
+    async def _lim(i: int, s):
+        async with sem:
+            return await _grab(i, s)
+
+    srcs = await asyncio.gather(*(_lim(i, s) for i, s in enumerate(usable)))
+    srcs = list(srcs)
+    try:
+        await status.edit_text(
+            f"\N{CHECK MARK BUTTON} Набор «{(st_set.title or sticker.set_name)[:40]}» скачан ({len(srcs)} шт)",
+            reply_markup=None,
+        )
+    except TelegramBadRequest:
+        pass
     title = (st_set.title or sticker.set_name)[:48]
     await state.update_data(srcs=srcs, pack=title)
     await state.set_state(Flow.waiting_photo)

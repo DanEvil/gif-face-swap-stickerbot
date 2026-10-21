@@ -13,6 +13,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
+    FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     KeyboardButton,
@@ -465,6 +466,11 @@ async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], q
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="\N{SPARKLES} Открыть стикерпак", url=link),
     ]])
+    try:
+        sample = random.choice(webms)
+        await message.answer_sticker(FSInputFile(sample))
+    except Exception:
+        pass
     await status.edit_text(
         f"\N{GRINNING FACE WITH SMILING EYES} Готово!\n{link}\n\n"
         "\N{SLIGHTLY SMILING FACE} Если стикеры не применились сразу — закрой и открой Telegram.",

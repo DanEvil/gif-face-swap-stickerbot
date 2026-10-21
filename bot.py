@@ -555,7 +555,7 @@ async def process(message: Message, bot: Bot, file, ext: str, srcs: list[str], q
         await message.answer_sticker(FSInputFile(sample))
     except Exception:
         pass
-    await status.edit_text(
+    await message.answer(
         f"\N{GRINNING FACE WITH SMILING EYES} Готово!\n{link}\n\n"
         "\N{SLIGHTLY SMILING FACE} Если стикеры не применились сразу — закрой и открой Telegram.",
         reply_markup=kb,
